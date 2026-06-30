@@ -107,7 +107,7 @@ class DemoModel:
 def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = False):
     """Construct an Agent from settings (heavy imports kept lazy)."""
     from open_agent.models.base import ModelInterface
-    from open_agent.tools.builtin import FileTool, PythonTool, ShellTool, WebSearchTool
+    from open_agent.tools.builtin import FileTool, KnowledgeBaseTool, PythonTool, ShellTool, WebSearchTool
     from open_agent.tools.registry import ToolRegistry
 
     if demo:
@@ -138,7 +138,7 @@ def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = F
             )
 
     registry = ToolRegistry()
-    for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool()):
+    for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), KnowledgeBaseTool()):
         registry.register(tool)
 
     if use_langgraph:
@@ -160,6 +160,17 @@ def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = F
 
 def _print_thinking_chain(output) -> None:
     """Display the agent's thinking chain (Thought / Action / Observation)."""
+    # Show intent classification if available
+    if hasattr(output, "intent") and output.intent:
+        console.print(Panel(f"[bold green]Intent:[/bold green] {output.intent}", title="Intent Classification"))
+
+    # Show sub-tasks if available
+    if hasattr(output, "sub_tasks") and output.sub_tasks:
+        tree = Tree("[bold blue]Task Decomposition[/bold blue]")
+        for i, task in enumerate(output.sub_tasks, 1):
+            tree.add(f"[dim]Sub-task {i}:[/dim] {task}")
+        console.print(tree)
+
     if not hasattr(output, "thoughts") or not output.thoughts:
         return
 
@@ -167,6 +178,13 @@ def _print_thinking_chain(output) -> None:
     for i, thought in enumerate(output.thoughts, 1):
         tree.add(f"[dim]Step {i}:[/dim] {thought}")
     console.print(tree)
+
+    # Show reflections if available
+    if hasattr(output, "reflections") and output.reflections:
+        tree = Tree("[bold magenta]Reflections[/bold magenta]")
+        for i, refl in enumerate(output.reflections, 1):
+            tree.add(f"[dim]Reflection {i}:[/dim] {refl}")
+        console.print(tree)
 
     if output.tool_calls_made:
         table = Table(title="Tool Calls", show_header=True, header_style="bold magenta")

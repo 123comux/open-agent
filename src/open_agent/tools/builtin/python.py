@@ -52,15 +52,30 @@ class PythonTool(Tool):
         locals_ns: dict[str, Any] = {}
         with contextlib.redirect_stdout(buffer):
             try:
-                # Try to compile as expression first (like Jupyter last line)
+                # Try to compile as a single expression first (like Jupyter)
                 try:
                     compiled = compile(code, "<python_tool>", "eval")
                     result = eval(compiled, globals_ns, locals_ns)  # noqa: S307
                     if result is not None:
                         print(repr(result) if not isinstance(result, str) else result)
                 except SyntaxError:
-                    # Not a single expression — exec as statements
-                    exec(code, globals_ns, locals_ns)  # noqa: S102
+                    # Multi-line code: exec all but try to eval the last line
+                    lines = code.rstrip().split("\n")
+                    # Check if the last non-empty line is an expression
+                    last_line = lines[-1].strip() if lines else ""
+                    if last_line and not last_line.endswith((":", "=")) and "import" not in last_line:
+                        # Split: exec everything before, eval the last line
+                        prefix = "\n".join(lines[:-1])
+                        if prefix.strip():
+                            exec(prefix, globals_ns, locals_ns)  # noqa: S102
+                        try:
+                            result = eval(last_line, globals_ns, locals_ns)  # noqa: S307
+                            if result is not None:
+                                print(repr(result) if not isinstance(result, str) else result)
+                        except SyntaxError:
+                            exec(code, globals_ns, locals_ns)  # noqa: S102
+                    else:
+                        exec(code, globals_ns, locals_ns)  # noqa: S102
             except Exception as exc:  # noqa: BLE001
                 return f"Error during execution: {type(exc).__name__}: {exc}"
         return buffer.getvalue()
