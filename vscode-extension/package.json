@@ -1,0 +1,55 @@
+{
+  "name": "open-agent",
+  "displayName": "Open Agent",
+  "description": "Agentic RAG autonomous work assistant in VS Code",
+  "version": "0.1.0",
+  "publisher": "open-agent",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["AI", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "open-agent", "title": "Open Agent", "icon": "media/icon.svg" }
+      ]
+    },
+    "views": {
+      "open-agent": [
+        { "id": "openAgent.chat", "name": "Chat", "type": "webview" }
+      ]
+    },
+    "commands": [
+      {
+        "command": "open-agent.sendPrompt",
+        "title": "Open Agent: Send Prompt"
+      },
+      {
+        "command": "open-agent.setApiUrl",
+        "title": "Open Agent: Set API URL"
+      }
+    ],
+    "configuration": {
+      "title": "Open Agent",
+      "properties": {
+        "open-agent.apiUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "URL of the Open Agent API server"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
