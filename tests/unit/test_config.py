@@ -21,7 +21,7 @@ def test_settings_defaults():
     settings = Settings()
     assert settings.model_provider == "openai"
     assert settings.api_key == ""
-    assert settings.base_url == "https://api.openai.com"
+    assert settings.base_url == "https://api.openai.com/v1"
     assert settings.model_name == "gpt-4o-mini"
     assert settings.max_steps == 10
     assert settings.request_timeout == 60.0
@@ -37,7 +37,7 @@ def test_settings_load_defaults_when_no_env(monkeypatch):
     settings = Settings.load()
     assert settings.model_provider == "openai"
     assert settings.api_key == ""
-    assert settings.base_url == "https://api.openai.com"
+    assert settings.base_url == "https://api.openai.com/v1"
     assert settings.model_name == "gpt-4o-mini"
     assert settings.max_steps == 10
     assert settings.request_timeout == 60.0
