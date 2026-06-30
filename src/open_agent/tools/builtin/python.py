@@ -52,7 +52,15 @@ class PythonTool(Tool):
         locals_ns: dict[str, Any] = {}
         with contextlib.redirect_stdout(buffer):
             try:
-                exec(code, globals_ns, locals_ns)  # noqa: S102
+                # Try to compile as expression first (like Jupyter last line)
+                try:
+                    compiled = compile(code, "<python_tool>", "eval")
+                    result = eval(compiled, globals_ns, locals_ns)  # noqa: S307
+                    if result is not None:
+                        print(repr(result) if not isinstance(result, str) else result)
+                except SyntaxError:
+                    # Not a single expression — exec as statements
+                    exec(code, globals_ns, locals_ns)  # noqa: S102
             except Exception as exc:  # noqa: BLE001
                 return f"Error during execution: {type(exc).__name__}: {exc}"
         return buffer.getvalue()

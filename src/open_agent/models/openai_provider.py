@@ -27,7 +27,7 @@ class OpenAIModel(ModelInterface):
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.openai.com",
+        base_url: str = "https://api.openai.com/v1",
         model: str = "gpt-4o-mini",
         timeout: float = 60.0,
     ) -> None:
@@ -94,7 +94,7 @@ class OpenAIModel(ModelInterface):
         tools: list[ToolSchema] | None = None,
     ) -> ModelResponse:
         """Call the OpenAI-compatible ``/v1/chat/completions`` endpoint."""
-        url = f"{self.base_url}/v1/chat/completions"
+        url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

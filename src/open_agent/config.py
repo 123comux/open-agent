@@ -18,7 +18,7 @@ class Settings(BaseModel):
 
     model_provider: Literal["openai", "anthropic", "ollama"] = "openai"
     api_key: str = ""
-    base_url: str = "https://api.openai.com"
+    base_url: str = "https://api.openai.com/v1"
     model_name: str = "gpt-4o-mini"
     max_steps: int = 10
     request_timeout: float = 60.0
@@ -40,7 +40,7 @@ class Settings(BaseModel):
         return cls(
             model_provider=provider,
             api_key=env("API_KEY", "") or "",
-            base_url=env("BASE_URL", "https://api.openai.com") or "https://api.openai.com",
+            base_url=env("BASE_URL", "https://api.openai.com/v1") or "https://api.openai.com/v1",
             model_name=env("MODEL_NAME", "gpt-4o-mini") or "gpt-4o-mini",
             max_steps=int(env("MAX_STEPS", "10") or 10),
             request_timeout=float(env("REQUEST_TIMEOUT", "60") or 60),
