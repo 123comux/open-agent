@@ -1,22 +1,27 @@
 """Command-line interface for open-agent (Typer + Rich).
 
 Commands:
-  chat   Start an interactive REPL session with the agent.
-  ask    Ask the agent a single question and print the answer.
-  serve  Start the FastAPI server.
+  chat    Start an interactive REPL session with the agent.
+  ask     Ask the agent a single question and print the answer.
+  serve   Start the FastAPI server.
+  index   Index documents into a knowledge base for RAG.
 
 Use --demo flag on chat/ask to try without an API key (uses a mock model).
+Use --langgraph flag to use LangGraph-based agent with thinking chain.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
+from rich.tree import Tree
 
 from open_agent.config import Settings, get_settings
 
@@ -94,14 +99,13 @@ class DemoModel:
         # Second call: summarize the tool result
         self._call_count = 0
         return self._ModelResponse(
-            content="Done! The tool executed successfully. (Demo mode — connect a real LLM for intelligent responses.)",
+            content="Done! The tool executed successfully. (Demo mode -- connect a real LLM for intelligent responses.)",
             tool_calls=[],
         )
 
 
-def _build_agent(settings: Settings, demo: bool = False):
+def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = False):
     """Construct an Agent from settings (heavy imports kept lazy)."""
-    from open_agent.agent.core import Agent
     from open_agent.models.base import ModelInterface
     from open_agent.tools.builtin import FileTool, PythonTool, ShellTool, WebSearchTool
     from open_agent.tools.registry import ToolRegistry
@@ -137,15 +141,63 @@ def _build_agent(settings: Settings, demo: bool = False):
     for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool()):
         registry.register(tool)
 
+    if use_langgraph:
+        try:
+            from open_agent.agent.langgraph_agent import LangGraphAgent
+
+            return LangGraphAgent(
+                model=model,
+                tools=list(registry._tools.values()),
+                max_steps=settings.max_steps,
+            )
+        except ImportError as exc:
+            console.print(f"[yellow]LangGraph not available ({exc}), falling back to core agent.[/yellow]")
+
+    from open_agent.agent.core import Agent
+
     return Agent(model=model, tool_registry=registry, max_steps=settings.max_steps)
 
 
+def _print_thinking_chain(output) -> None:
+    """Display the agent's thinking chain (Thought / Action / Observation)."""
+    if not hasattr(output, "thoughts") or not output.thoughts:
+        return
+
+    tree = Tree("[bold blue]Thinking Chain[/bold blue]")
+    for i, thought in enumerate(output.thoughts, 1):
+        tree.add(f"[dim]Step {i}:[/dim] {thought}")
+    console.print(tree)
+
+    if output.tool_calls_made:
+        table = Table(title="Tool Calls", show_header=True, header_style="bold magenta")
+        table.add_column("Step", style="dim")
+        table.add_column("Tool", style="cyan")
+        table.add_column("Arguments", style="green")
+        table.add_column("Result", style="yellow")
+        for tc in output.tool_calls_made:
+            obs = tc.get("observation", "")
+            if len(obs) > 100:
+                obs = obs[:100] + "..."
+            table.add_row(
+                str(tc.get("step", "?")),
+                tc.get("name", "?"),
+                str(tc.get("arguments", {})),
+                obs,
+            )
+        console.print(table)
+
+
 @app.command()
-def chat(demo: bool = typer.Option(False, "--demo", help="Run with a mock model, no API key needed.")) -> None:
+def chat(
+    demo: bool = typer.Option(False, "--demo", help="Run with a mock model, no API key needed."),
+    langgraph: bool = typer.Option(False, "--langgraph", help="Use LangGraph agent with thinking chain."),
+) -> None:
     """Start an interactive REPL session with the agent."""
     settings = get_settings()
-    agent = _build_agent(settings, demo=demo)
+    agent = _build_agent(settings, demo=demo, use_langgraph=langgraph)
     mode_label = "demo" if demo else f"{settings.model_provider}/{settings.model_name}"
+    if langgraph:
+        mode_label += " (LangGraph)"
     console.print(
         Panel(
             f"Open Agent ready. Mode: {mode_label}. Type 'exit' to quit.",
@@ -168,34 +220,55 @@ def chat(demo: bool = typer.Option(False, "--demo", help="Run with a mock model,
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Error:[/red] {exc}")
             continue
+        _print_thinking_chain(output)
         console.print(Panel(Markdown(output.response), title="assistant"))
-        if output.tool_calls_made:
-            for tc in output.tool_calls_made:
-                console.print(
-                    f"  [dim]tool: {tc['name']}({tc['arguments']}) -> "
-                    f"{tc['observation'][:80]}...[/dim]"
-                )
 
 
 @app.command()
 def ask(
     question: str,
     demo: bool = typer.Option(False, "--demo", help="Run with a mock model, no API key needed."),
+    langgraph: bool = typer.Option(False, "--langgraph", help="Use LangGraph agent with thinking chain."),
 ) -> None:
     """Ask the agent a single question and print the answer."""
     settings = get_settings()
-    agent = _build_agent(settings, demo=demo)
+    agent = _build_agent(settings, demo=demo, use_langgraph=langgraph)
     output = asyncio.run(agent.run(question))
+    _print_thinking_chain(output)
     console.print(Panel(Markdown(output.response), title="assistant"))
     console.print(
         f"[dim]steps: {output.steps}, tool calls: {len(output.tool_calls_made)}[/dim]"
     )
-    if output.tool_calls_made:
-        for tc in output.tool_calls_made:
-            console.print(
-                f"  [dim]tool: {tc['name']}({tc['arguments']}) -> "
-                f"{tc['observation'][:100]}[/dim]"
-            )
+
+
+@app.command()
+def index(
+    path: str = typer.Argument(..., help="Directory or file path to index."),
+    kb_name: str = typer.Option("default", "--kb", help="Knowledge base name."),
+    description: str = typer.Option("", "--desc", help="Knowledge base description."),
+) -> None:
+    """Index documents into a knowledge base for RAG retrieval."""
+    console.print(f"[cyan]Indexing '{path}' into KB '{kb_name}'...[/cyan]")
+    try:
+        from open_agent.rag.kb_manager import KBManager
+
+        manager = KBManager()
+        p = Path(path)
+        if p.is_dir():
+            count = asyncio.run(manager.index_directory(str(p), kb_name, description))
+        elif p.is_file():
+            count = asyncio.run(manager.index_file(str(p), kb_name))
+        else:
+            console.print(f"[red]Error: '{path}' is not a valid file or directory.[/red]")
+            raise typer.Exit(1)
+        console.print(f"[green]Indexed {count} chunks into KB '{kb_name}'.[/green]")
+    except ImportError as exc:
+        console.print(f"[red]RAG dependencies not installed: {exc}[/red]")
+        console.print("[dim]Install with: pip install 'open-agent[rag]'[/dim]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
 
 
 @app.command()

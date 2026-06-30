@@ -4,4 +4,38 @@ from __future__ import annotations
 from open_agent.rag.indexer import Chunk, Document, Indexer
 from open_agent.rag.retriever import Retriever
 
-__all__ = ["Chunk", "Document", "Indexer", "Retriever"]
+__all__ = [
+    "Chunk",
+    "Document",
+    "Indexer",
+    "Retriever",
+]
+
+# Optional imports requiring faiss/sentence-transformers
+try:
+    from open_agent.rag.stores.faiss_store import FAISSStore
+
+    __all__.append("FAISSStore")
+except ImportError:
+    pass
+
+try:
+    from open_agent.rag.hybrid_retriever import HybridRetriever
+
+    __all__.append("HybridRetriever")
+except ImportError:
+    pass
+
+try:
+    from open_agent.rag.kb_router import KnowledgeBase, KnowledgeBaseRouter
+
+    __all__.extend(["KnowledgeBase", "KnowledgeBaseRouter"])
+except ImportError:
+    pass
+
+try:
+    from open_agent.rag.kb_manager import KBManager
+
+    __all__.append("KBManager")
+except ImportError:
+    pass
