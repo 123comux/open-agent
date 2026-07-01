@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatClient } from "./api/client";
 import { Chat } from "./components/Chat";
 import { Sidebar } from "./components/Sidebar";
 import { Settings } from "./components/Settings";
-import type { ChatResponse, Message, Tool } from "./types";
+import type { Message, Tool } from "./types";
 
 function generateSessionId(): string {
   return `sess-${Math.random().toString(36).slice(2, 10)}`;
@@ -27,6 +27,7 @@ export default function App() {
   );
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const cancelRef = useRef<(() => void) | null>(null);
 
   const client = useMemo(() => new ChatClient(apiUrl), [apiUrl]);
 
@@ -58,8 +59,13 @@ export default function App() {
     };
   }, [client]);
 
+  // Cleanup any active stream on unmount
+  useEffect(() => {
+    return () => cancelRef.current?.();
+  }, []);
+
   const handleSend = useCallback(
-    async (text: string) => {
+    (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || loading) return;
       setError(null);
@@ -73,22 +79,101 @@ export default function App() {
       setMessages((prev) => [...prev, userMsg]);
       setLoading(true);
 
-      try {
-        const res: ChatResponse = await client.sendMessage(trimmed, sessionId);
-        const assistantMsg: Message = {
-          id: newId(),
+      // Use streaming via WebSocket
+      const assistantId = newId();
+      const toolCallsAccum: {
+        step: number;
+        name: string;
+        arguments: Record<string, unknown>;
+        observation: string;
+        is_error: boolean;
+      }[] = [];
+
+      // Create placeholder assistant message that we update as tokens arrive
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: assistantId,
           role: "assistant",
-          content: res.response,
-          steps: res.steps,
-          toolCalls: res.tool_calls_made,
+          content: "",
+          streaming: true,
           timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Request failed");
-      } finally {
-        setLoading(false);
-      }
+        },
+      ]);
+
+      cancelRef.current = client.streamMessage(trimmed, sessionId, {
+        onToken: (chunk) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, content: m.content + chunk }
+                : m
+            )
+          );
+        },
+        onToolStart: (name, args) => {
+          toolCallsAccum.push({
+            step: toolCallsAccum.length + 1,
+            name,
+            arguments: args,
+            observation: "",
+            is_error: false,
+          });
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, toolCalls: [...toolCallsAccum] }
+                : m
+            )
+          );
+        },
+        onToolEnd: (name, observation, isError) => {
+          const tc = toolCallsAccum.find((t) => t.name === name && !t.observation);
+          if (tc) {
+            tc.observation = observation;
+            tc.is_error = isError;
+          }
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, toolCalls: [...toolCallsAccum] }
+                : m
+            )
+          );
+        },
+        onDone: (_response, steps, toolCalls) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    streaming: false,
+                    steps,
+                    toolCalls: toolCalls.length > 0 ? toolCalls : toolCallsAccum,
+                  }
+                : m
+            )
+          );
+          setLoading(false);
+          cancelRef.current = null;
+        },
+        onError: (err) => {
+          setError(err);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    streaming: false,
+                    content: m.content || "Failed to get response.",
+                  }
+                : m
+            )
+          );
+          setLoading(false);
+          cancelRef.current = null;
+        },
+      });
     },
     [client, loading, sessionId]
   );

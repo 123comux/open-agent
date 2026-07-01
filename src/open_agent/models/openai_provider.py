@@ -8,6 +8,7 @@ pointing ``base_url`` at the right host.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -105,3 +106,35 @@ class OpenAIModel(ModelInterface):
             response.raise_for_status()
             data = response.json()
         return self._parse_response(data)
+
+    async def stream_chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream chat completion via SSE, yielding text chunks as they arrive."""
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = self._build_payload(messages, tools)
+        payload["stream"] = True
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            choices = data.get("choices") or []
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content")
+                                if content:
+                                    yield content
+                        except json.JSONDecodeError:
+                            continue

@@ -39,3 +39,10 @@ try:
     __all__.append("KBManager")
 except ImportError:
     pass
+
+try:
+    from open_agent.rag.evaluation import RAGEvaluator, RAGTestCase
+
+    __all__.extend(["RAGEvaluator", "RAGTestCase"])
+except ImportError:
+    pass

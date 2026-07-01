@@ -5,10 +5,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from open_agent.rag.document_loaders import SUPPORTED_EXTENSIONS, load_file
 from open_agent.rag.kb_router import KnowledgeBase, KnowledgeBaseRouter
-
-# Text file extensions indexed by :meth:`KBManager.index_directory`.
-_TEXT_EXTENSIONS = {".txt", ".md", ".rst", ".text"}
 
 
 class KBManager:
@@ -51,28 +49,31 @@ class KBManager:
         return self._router.list_kbs()
 
     async def index_file(self, file_path: str, kb_name: str) -> int:
-        """Index a single text file into a knowledge base; return chunk count.
+        """Index a single document file into a knowledge base; return chunk count.
 
-        If the knowledge base does not exist it is created with ``kb_name`` as
-        its description.
+        The file is loaded via :func:`open_agent.rag.document_loaders.load_file`,
+        which auto-detects the format. If the knowledge base does not exist it
+        is created with ``kb_name`` as its description.
         """
         kb = self._kbs.get(kb_name)
         if kb is None:
             kb = await self.create_kb(kb_name, description=kb_name)
-        text = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        loaded = load_file(file_path)
         before = await kb.count()
-        await kb.add_documents([text], metadatas=[{"source": file_path}])
+        await kb.add_documents([loaded.text], metadatas=[{"source": file_path}])
         after = await kb.count()
         return after - before
 
     async def index_directory(
         self, dir_path: str, kb_name: str, description: str = ""
     ) -> int:
-        """Index all text files in a directory into a knowledge base.
+        """Index all supported document files in a directory into a knowledge base.
 
-        Text files are those with one of the extensions {``.txt``, ``.md``,
-        ``.rst``, ``.text``}. Only the top level of ``dir_path`` is scanned.
-        Returns the number of chunks indexed.
+        Supported files are those whose extension is in
+        :data:`open_agent.rag.document_loaders.SUPPORTED_EXTENSIONS`
+        (``.txt``, ``.md``, ``.rst``, ``.pdf``, ``.docx``, ``.csv``, ``.json``,
+        ``.html``). Only the top level of ``dir_path`` is scanned. Returns the
+        number of chunks indexed.
         """
         kb = self._kbs.get(kb_name)
         if kb is None:
@@ -82,15 +83,15 @@ class KBManager:
             raise NotADirectoryError(dir_path)
         before = await kb.count()
         for path in sorted(root.iterdir()):
-            if not path.is_file() or path.suffix.lower() not in _TEXT_EXTENSIONS:
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")
+                loaded = load_file(str(path))
             except OSError:
                 continue
-            if not text.strip():
+            if not loaded.text.strip():
                 continue
-            await kb.add_documents([text], metadatas=[{"source": str(path)}])
+            await kb.add_documents([loaded.text], metadatas=[{"source": str(path)}])
         after = await kb.count()
         return after - before
 

@@ -14,6 +14,7 @@ _ENV_KEYS = [
     "SERVER_HOST",
     "SERVER_PORT",
     "SHORT_TERM_MEMORY_SIZE",
+    "SESSION_STORAGE_DIR",
 ]
 
 

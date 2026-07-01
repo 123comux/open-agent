@@ -1,10 +1,11 @@
 """Command-line interface for open-agent (Typer + Rich).
 
 Commands:
-  chat    Start an interactive REPL session with the agent.
-  ask     Ask the agent a single question and print the answer.
-  serve   Start the FastAPI server.
-  index   Index documents into a knowledge base for RAG.
+  chat      Start an interactive REPL session with the agent.
+  ask       Ask the agent a single question and print the answer.
+  serve     Start the FastAPI server.
+  index     Index documents into a knowledge base for RAG.
+  evaluate  Evaluate RAG quality on a set of test cases.
 
 Use --demo flag on chat/ask to try without an API key (uses a mock model).
 Use --langgraph flag to use LangGraph-based agent with thinking chain.
@@ -104,38 +105,45 @@ class DemoModel:
         )
 
 
+def _build_model(settings: Settings):
+    """Construct a model from settings (heavy imports kept lazy)."""
+    from open_agent.models.base import ModelInterface
+
+    provider = settings.model_provider
+    model: ModelInterface
+    if provider == "anthropic":
+        from open_agent.models.anthropic_provider import AnthropicModel
+
+        model = AnthropicModel(
+            api_key=settings.api_key, model=settings.model_name, timeout=settings.request_timeout
+        )
+    elif provider == "ollama":
+        from open_agent.models.ollama_provider import OllamaModel
+
+        model = OllamaModel(
+            base_url=settings.base_url, model=settings.model_name, timeout=settings.request_timeout
+        )
+    else:
+        from open_agent.models.openai_provider import OpenAIModel
+
+        model = OpenAIModel(
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            model=settings.model_name,
+            timeout=settings.request_timeout,
+        )
+    return model
+
+
 def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = False):
     """Construct an Agent from settings (heavy imports kept lazy)."""
-    from open_agent.models.base import ModelInterface
     from open_agent.tools.builtin import FileTool, KnowledgeBaseTool, PythonTool, ShellTool, WebSearchTool
     from open_agent.tools.registry import ToolRegistry
 
     if demo:
         model = DemoModel()
     else:
-        provider = settings.model_provider
-        model: ModelInterface
-        if provider == "anthropic":
-            from open_agent.models.anthropic_provider import AnthropicModel
-
-            model = AnthropicModel(
-                api_key=settings.api_key, model=settings.model_name, timeout=settings.request_timeout
-            )
-        elif provider == "ollama":
-            from open_agent.models.ollama_provider import OllamaModel
-
-            model = OllamaModel(
-                base_url=settings.base_url, model=settings.model_name, timeout=settings.request_timeout
-            )
-        else:
-            from open_agent.models.openai_provider import OpenAIModel
-
-            model = OpenAIModel(
-                api_key=settings.api_key,
-                base_url=settings.base_url,
-                model=settings.model_name,
-                timeout=settings.request_timeout,
-            )
+        model = _build_model(settings)
 
     registry = ToolRegistry()
     for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), KnowledgeBaseTool()):
@@ -296,6 +304,67 @@ def serve(host: Optional[str] = None, port: Optional[int] = None) -> None:
     from open_agent.server.api import main as run_server
 
     run_server(host=host or settings.server_host, port=port or settings.server_port)
+
+
+@app.command()
+def evaluate(
+    qa_file: str = typer.Argument(..., help="JSON file with test cases."),
+    demo: bool = typer.Option(False, "--demo", help="Use heuristic metrics without LLM."),
+) -> None:
+    """Evaluate RAG quality on a set of test cases."""
+    import json
+    from open_agent.rag.evaluation import RAGEvaluator, RAGTestCase
+
+    test_data = json.loads(Path(qa_file).read_text(encoding="utf-8"))
+    test_cases = [
+        RAGTestCase(
+            question=tc["question"],
+            expected_answer=tc.get("expected_answer", ""),
+            retrieved_contexts=tc.get("retrieved_contexts", []),
+            generated_answer=tc.get("generated_answer", ""),
+            ground_truth_contexts=tc.get("ground_truth_contexts", []),
+        )
+        for tc in test_data["test_cases"]
+    ]
+
+    if demo:
+        evaluator = RAGEvaluator(model=None)
+    else:
+        settings = get_settings()
+        model = _build_model(settings)
+        evaluator = RAGEvaluator(model=model)
+
+    results = asyncio.run(evaluator.evaluate_batch(test_cases))
+
+    # Print results table
+    table = Table(title="RAG Evaluation Results", show_header=True, header_style="bold magenta")
+    table.add_column("Question", style="cyan", max_width=40)
+    table.add_column("Faithfulness", style="green")
+    table.add_column("Relevance", style="yellow")
+    table.add_column("Recall", style="blue")
+    table.add_column("Precision", style="magenta")
+    table.add_column("Overall", style="bold red")
+
+    for tc, result in zip(test_cases, results):
+        table.add_row(
+            tc.question[:40] + "..." if len(tc.question) > 40 else tc.question,
+            f"{result.faithfulness:.2f}",
+            f"{result.answer_relevance:.2f}",
+            f"{result.context_recall:.2f}",
+            f"{result.context_precision:.2f}",
+            f"{result.overall_score:.2f}",
+        )
+
+    console.print(table)
+
+    # Print average
+    avg = lambda key: sum(getattr(r, key) for r in results) / len(results)
+    console.print(f"\n[bold]Average Scores:[/bold]")
+    console.print(f"  Faithfulness: {avg('faithfulness'):.3f}")
+    console.print(f"  Relevance:    {avg('answer_relevance'):.3f}")
+    console.print(f"  Recall:       {avg('context_recall'):.3f}")
+    console.print(f"  Precision:    {avg('context_precision'):.3f}")
+    console.print(f"  Overall:      {avg('overall_score'):.3f}")
 
 
 if __name__ == "__main__":

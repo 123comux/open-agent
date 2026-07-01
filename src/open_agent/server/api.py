@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from open_agent.config import get_settings
+from open_agent.memory.session_manager import SessionManager
 
 # FastAPI is an optional dependency; provide a clear error if missing.
 try:
@@ -57,7 +58,15 @@ def _build_agent():
     registry = ToolRegistry()
     for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool()):
         registry.register(tool)
-    return Agent(model=model, tool_registry=registry, max_steps=settings.max_steps), registry
+    return (
+        Agent(
+            model=model,
+            tool_registry=registry,
+            max_steps=settings.max_steps,
+            session_manager=_session_manager,
+        ),
+        registry,
+    )
 
 
 class ChatRequest(BaseModel):
@@ -74,6 +83,12 @@ class ChatResponse(BaseModel):
     steps: int
     tool_calls_made: list[dict] = Field(default_factory=list)
 
+
+_settings = get_settings()
+_session_manager = SessionManager(
+    max_messages=_settings.short_term_memory_size,
+    storage_dir=_settings.session_storage_dir,
+)
 
 app = FastAPI(title="Open Agent API", version="0.1.0")
 _agent, _registry = _build_agent()
@@ -104,11 +119,17 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
 @app.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket) -> None:
-    """Stream a conversation over WebSocket.
+    """Stream a conversation over WebSocket with real-time token streaming.
 
     Receives JSON messages of shape ``{"message": "...", "session_id": "..."}``
-    and replies with the full :class:`ChatResponse` payload as JSON. The
-    connection stays open for multiple round trips until the client disconnects.
+    and streams back events as they occur:
+
+    - ``{"type": "token", "content": "..."}`` -- incremental response text
+    - ``{"type": "tool_start", "name": "...", "arguments": {...}}``
+    - ``{"type": "tool_end", "name": "...", "observation": "...", "is_error": bool}``
+    - ``{"type": "done", "response": "...", "steps": N, "tool_calls_made": [...]}``
+
+    The connection stays open for multiple round trips until the client disconnects.
     """
     await websocket.accept()
     try:
@@ -116,16 +137,32 @@ async def ws_chat(websocket: WebSocket) -> None:
             data = await websocket.receive_json()
             message = data.get("message", "")
             session_id = data.get("session_id", "default")
-            output = await _agent.run(message, session_id=session_id)
-            await websocket.send_json(
-                {
-                    "response": output.response,
-                    "steps": output.steps,
-                    "tool_calls_made": output.tool_calls_made,
-                }
-            )
+
+            async for event in _agent.run_stream(message, session_id=session_id):
+                await websocket.send_json(event)
+
     except WebSocketDisconnect:
         return
+
+
+@app.get("/api/sessions")
+async def list_sessions() -> dict[str, list[str]]:
+    """List all known session IDs."""
+    return {"sessions": _session_manager.list_sessions()}
+
+
+@app.delete("/api/sessions/{session_id}")
+async def clear_session(session_id: str) -> dict[str, str]:
+    """Clear a session's conversation history."""
+    _session_manager.clear_session(session_id)
+    return {"status": "cleared"}
+
+
+@app.get("/api/sessions/{session_id}/history")
+async def get_history(session_id: str) -> dict[str, list[dict[str, str]]]:
+    """Return the stored conversation history for a session."""
+    history = _session_manager.get_history(session_id)
+    return {"messages": [{"role": m.role, "content": m.content} for m in history]}
 
 
 def main(host: str = "127.0.0.1", port: int = 8000) -> None:

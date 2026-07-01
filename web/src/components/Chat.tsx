@@ -189,9 +189,18 @@ function MessageBubble({ message }: { message: Message }) {
         >
           {isUser ? (
             <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          ) : message.streaming && !message.content ? (
+            <div className="flex items-center gap-1.5 py-1">
+              <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-500 [animation-delay:-0.3s]" />
+              <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-500 [animation-delay:-0.15s]" />
+              <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-500" />
+            </div>
           ) : (
             <div className="prose-agent break-words">
               <ReactMarkdown>{message.content}</ReactMarkdown>
+              {message.streaming && (
+                <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-emerald-400 align-text-bottom" />
+              )}
             </div>
           )}
         </div>

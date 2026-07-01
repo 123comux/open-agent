@@ -7,6 +7,8 @@ field, per the Anthropic API contract. Tool use is mapped to/from Anthropic's
 """
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -101,3 +103,40 @@ class AnthropicModel(ModelInterface):
             response.raise_for_status()
             data = response.json()
         return self._parse_response(data)
+
+    async def stream_chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream chat completion via Anthropic SSE, yielding text chunks.
+
+        Anthropic streams Server-Sent Events; text tokens arrive on
+        ``content_block_delta`` events whose ``delta.type`` is ``text_delta``.
+        """
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": self.ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        }
+        payload = self._build_payload(messages, tools)
+        payload["stream"] = True
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream(
+                "POST", self.API_URL, headers=headers, json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("type") == "content_block_delta":
+                        delta = data.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text")
+                            if text:
+                                yield text

@@ -8,6 +8,7 @@ without touching the core loop.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
 from pydantic import BaseModel, Field
 
@@ -64,3 +65,23 @@ class ModelInterface(ABC):
             A normalized :class:`ModelResponse`.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    async def stream_chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream a chat completion, yielding text chunks as they arrive.
+
+        Args:
+            messages: The conversation so far, oldest first.
+            tools: Optional tool schemas the model is allowed to call.
+
+        Yields:
+            Text chunks (tokens) as the model produces them. Tool-call
+            requests are not streamed through this interface; use :meth:`chat`
+            when tool-call detection is required.
+        """
+        raise NotImplementedError
+        yield ""  # make it a generator

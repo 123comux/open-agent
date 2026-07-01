@@ -25,6 +25,7 @@ class Settings(BaseModel):
     server_host: str = "127.0.0.1"
     server_port: int = 8000
     short_term_memory_size: int = 20
+    session_storage_dir: str = ".open_agent_sessions"
 
     @classmethod
     def load(cls) -> Settings:
@@ -47,6 +48,8 @@ class Settings(BaseModel):
             server_host=env("SERVER_HOST", "127.0.0.1") or "127.0.0.1",
             server_port=int(env("SERVER_PORT", "8000") or 8000),
             short_term_memory_size=int(env("SHORT_TERM_MEMORY_SIZE", "20") or 20),
+            session_storage_dir=env("SESSION_STORAGE_DIR", ".open_agent_sessions")
+            or ".open_agent_sessions",
         )
 
 

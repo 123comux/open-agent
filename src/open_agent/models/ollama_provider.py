@@ -7,6 +7,7 @@ returned, which keeps the interface consistent with the other providers.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -96,3 +97,34 @@ class OllamaModel(ModelInterface):
             response.raise_for_status()
             data = response.json()
         return self._parse_response(data)
+
+    async def stream_chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream chat completion via Ollama's newline-delimited JSON.
+
+        Ollama returns one JSON object per line when ``stream`` is true; each
+        object carries a ``message.content`` chunk. The final object has
+        ``done`` set to true.
+        """
+        url = f"{self.base_url}/api/chat"
+        payload = self._build_payload(messages, tools)
+        payload["stream"] = True
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream("POST", url, json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    message = data.get("message") or {}
+                    content = message.get("content")
+                    if content:
+                        yield content
+                    if data.get("done"):
+                        break

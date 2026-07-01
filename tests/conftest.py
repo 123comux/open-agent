@@ -1,6 +1,8 @@
 """Shared pytest fixtures for the open-agent test suite."""
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
 
 from open_agent.models.base import (
@@ -28,6 +30,7 @@ class MockModel(ModelInterface):
     def __init__(self, responses: list[ModelResponse] | None = None) -> None:
         self.responses: list[ModelResponse] = list(responses or [])
         self.calls: list[dict] = []
+        self.last_response: ModelResponse | None = None
 
     async def chat(
         self,
@@ -36,8 +39,33 @@ class MockModel(ModelInterface):
     ) -> ModelResponse:
         self.calls.append({"messages": list(messages), "tools": tools})
         if not self.responses:
-            return ModelResponse(content="mock default response")
-        return self.responses.pop(0)
+            response = ModelResponse(content="mock default response")
+        else:
+            response = self.responses.pop(0)
+        self.last_response = response
+        return response
+
+    async def stream_chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolSchema] | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream content as a single chunk.
+
+        If a response is still queued, it is consumed (representing a fresh
+        generation, e.g. the max-steps summary). Otherwise the most recent
+        ``chat`` content is replayed, so a direct-answer stream observes the
+        same text the non-stream path produced.
+        """
+        self.calls.append({"messages": list(messages), "tools": tools, "stream": True})
+        if self.responses:
+            response = self.responses.pop(0)
+            self.last_response = response
+            yield response.content or "mock default response"
+        elif self.last_response is not None and self.last_response.content:
+            yield self.last_response.content
+        else:
+            yield "mock default response"
 
     def queue(self, response: ModelResponse) -> None:
         """Append a response to the end of the queue."""
