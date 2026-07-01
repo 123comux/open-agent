@@ -160,7 +160,20 @@ def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = F
         model = _build_model(settings)
 
     registry = ToolRegistry()
-    for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), KnowledgeBaseTool()):
+    try:
+        from open_agent.rag.kb_manager import KBManager
+
+        kb_manager = KBManager(
+            embedding_model=settings.embedding_model,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            split_unit=settings.split_unit,
+            top_k=settings.rag_top_k,
+        )
+        kb_tool = KnowledgeBaseTool(kb_manager=kb_manager, top_k=settings.rag_top_k)
+    except ImportError:
+        kb_tool = KnowledgeBaseTool()
+    for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), kb_tool):
         registry.register(tool)
 
     if use_langgraph:
@@ -334,11 +347,18 @@ def index(
     description: str = typer.Option("", "--desc", help="Knowledge base description."),
 ) -> None:
     """Index documents into a knowledge base for RAG retrieval."""
+    settings = get_settings()
     console.print(f"[cyan]Indexing '{path}' into KB '{kb_name}'...[/cyan]")
     try:
         from open_agent.rag.kb_manager import KBManager
 
-        manager = KBManager()
+        manager = KBManager(
+            embedding_model=settings.embedding_model,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            split_unit=settings.split_unit,
+            top_k=settings.rag_top_k,
+        )
         p = Path(path)
         if p.is_dir():
             count = asyncio.run(manager.index_directory(str(p), kb_name, description))

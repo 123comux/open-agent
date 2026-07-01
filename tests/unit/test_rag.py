@@ -132,3 +132,15 @@ async def test_retriever_aretrieve():
     results = await retriever.aretrieve("Python")
     assert len(results) == 1
     assert results[0].document_id == "d1"
+
+
+def test_indexer_char_mode():
+    indexer = Indexer(chunk_size=10, chunk_overlap=2, split_unit="char")
+    text = "0123456789ABCDEF"
+    chunks = indexer.index_text("doc1", text)
+
+    assert len(chunks) == 2
+    assert chunks[0].text == "0123456789"
+    assert chunks[1].text == "89ABCDEF"
+    assert chunks[0].metadata["char_start"] == 0
+    assert chunks[1].metadata["char_start"] == 8

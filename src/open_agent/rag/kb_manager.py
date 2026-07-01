@@ -22,8 +22,22 @@ class KBManager:
             otherwise).
     """
 
-    def __init__(self, storage_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        storage_dir: str | None = None,
+        *,
+        embedding_model: str = "BAAI/bge-small-zh-v1.5",
+        chunk_size: int = 500,
+        chunk_overlap: int = 50,
+        split_unit: str = "char",
+        top_k: int = 5,
+    ) -> None:
         self.storage_dir = storage_dir
+        self._embedding_model = embedding_model
+        self._chunk_size = chunk_size
+        self._chunk_overlap = chunk_overlap
+        self._split_unit = split_unit
+        self._top_k = top_k
         self._router = KnowledgeBaseRouter()
         self._kbs: dict[str, KnowledgeBase] = {}
 
@@ -34,7 +48,14 @@ class KBManager:
             os.makedirs(self.storage_dir, exist_ok=True)
             index_path = os.path.join(self.storage_dir, f"{name}.faiss")
         kb = KnowledgeBase(
-            name=name, description=description, index_path=index_path
+            name=name,
+            description=description,
+            index_path=index_path,
+            embedding_model=self._embedding_model,
+            chunk_size=self._chunk_size,
+            chunk_overlap=self._chunk_overlap,
+            split_unit=self._split_unit,
+            top_k=self._top_k,
         )
         self._kbs[name] = kb
         self._router.add_kb(kb)

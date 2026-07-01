@@ -27,6 +27,13 @@ class Settings(BaseModel):
     short_term_memory_size: int = 20
     session_storage_dir: str = ".open_agent_sessions"
 
+    # RAG / embeddings
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+    split_unit: str = "char"
+    rag_top_k: int = 5
+
     @classmethod
     def load(cls) -> Settings:
         """Load settings from environment variables (``OPEN_AGENT_`` prefix)."""
@@ -50,6 +57,12 @@ class Settings(BaseModel):
             short_term_memory_size=int(env("SHORT_TERM_MEMORY_SIZE", "20") or 20),
             session_storage_dir=env("SESSION_STORAGE_DIR", ".open_agent_sessions")
             or ".open_agent_sessions",
+            embedding_model=env("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+            or "BAAI/bge-small-zh-v1.5",
+            chunk_size=int(env("CHUNK_SIZE", "500") or 500),
+            chunk_overlap=int(env("CHUNK_OVERLAP", "50") or 50),
+            split_unit=env("SPLIT_UNIT", "char") or "char",
+            rag_top_k=int(env("RAG_TOP_K", "5") or 5),
         )
 
 

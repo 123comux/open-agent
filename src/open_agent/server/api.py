@@ -35,7 +35,7 @@ def _build_agent():
     """Construct an Agent and its registry from settings (lazy heavy imports)."""
     from open_agent.agent.core import Agent
     from open_agent.models.base import ModelInterface
-    from open_agent.tools.builtin import FileTool, PythonTool, ShellTool, WebSearchTool
+    from open_agent.tools.builtin import FileTool, KnowledgeBaseTool, PythonTool, ShellTool, WebSearchTool
     from open_agent.tools.registry import ToolRegistry
 
     settings = get_settings()
@@ -64,7 +64,20 @@ def _build_agent():
         )
 
     registry = ToolRegistry()
-    for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool()):
+    try:
+        from open_agent.rag.kb_manager import KBManager
+
+        kb_manager = KBManager(
+            embedding_model=settings.embedding_model,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            split_unit=settings.split_unit,
+            top_k=settings.rag_top_k,
+        )
+        kb_tool = KnowledgeBaseTool(kb_manager=kb_manager, top_k=settings.rag_top_k)
+    except ImportError:
+        kb_tool = KnowledgeBaseTool()
+    for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), kb_tool):
         registry.register(tool)
     return (
         Agent(
@@ -292,7 +305,13 @@ async def upload_document(
     try:
         from open_agent.rag.kb_manager import KBManager
 
-        manager = KBManager()
+        manager = KBManager(
+            embedding_model=_settings.embedding_model,
+            chunk_size=_settings.chunk_size,
+            chunk_overlap=_settings.chunk_overlap,
+            split_unit=_settings.split_unit,
+            top_k=_settings.rag_top_k,
+        )
         chunk_count = await manager.index_file(tmp_path, kb_name)
         logger.info(
             f"Uploaded file '{file.filename}' indexed into KB '{kb_name}': {chunk_count} chunks"

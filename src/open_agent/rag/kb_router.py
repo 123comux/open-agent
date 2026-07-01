@@ -42,8 +42,12 @@ class KnowledgeBase:
         description: str,
         documents: list[str] | None = None,
         *,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "BAAI/bge-small-zh-v1.5",
         index_path: str | None = None,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50,
+        split_unit: str = "char",
+        top_k: int = 5,
     ) -> None:
         self.name = name
         self.description = description
@@ -51,8 +55,10 @@ class KnowledgeBase:
         self._store = FAISSStore(
             embedding_model=embedding_model, index_path=index_path
         )
-        self._indexer = Indexer(chunk_size=1, chunk_overlap=0)
-        self._retriever = HybridRetriever(vector_store=self._store, top_k=5)
+        self._indexer = Indexer(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap, split_unit=split_unit
+        )
+        self._retriever = HybridRetriever(vector_store=self._store, top_k=top_k)
         self._doc_seq = 0
         self._routing_embedding: np.ndarray[Any, np.dtype[Any]] | None = None
 

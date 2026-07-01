@@ -42,8 +42,9 @@ Important:
   date. Use broad terms like "latest" or "today" unless the user explicitly
   provides a date.
 - For web_search, write the query in the SAME language as the user's question.
-  Do NOT mix languages (e.g., avoid "today news 2026年7月2日"). For Chinese
-  news use queries like "今日新闻 最新消息" or "2026年7月2日 新闻".
+  Do NOT mix languages (e.g., avoid "today news 2026"). For Chinese news use
+  queries like "今日新闻 最新消息" or "2026年7月2日 新闻" (use the real current
+  date from above, not a made-up one).
 - Do NOT call file or shell tools unless the user explicitly asks for file or
   system operations.
 

@@ -15,6 +15,11 @@ services:
       - OPEN_AGENT_MODEL_NAME=${OPEN_AGENT_MODEL_NAME:-gpt-4o-mini}
       - OPEN_AGENT_SERVER_HOST=0.0.0.0
       - OPEN_AGENT_SERVER_PORT=8000
+      - OPEN_AGENT_EMBEDDING_MODEL=${OPEN_AGENT_EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      - OPEN_AGENT_CHUNK_SIZE=${OPEN_AGENT_CHUNK_SIZE:-500}
+      - OPEN_AGENT_CHUNK_OVERLAP=${OPEN_AGENT_CHUNK_OVERLAP:-50}
+      - OPEN_AGENT_SPLIT_UNIT=${OPEN_AGENT_SPLIT_UNIT:-char}
+      - OPEN_AGENT_RAG_TOP_K=${OPEN_AGENT_RAG_TOP_K:-5}
     volumes:
       - ./data:/app/data
       - ./open_agent_sessions:/app/.open_agent_sessions
