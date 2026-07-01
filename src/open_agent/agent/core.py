@@ -9,6 +9,7 @@ direct answer or ``max_steps`` is reached.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +34,18 @@ You are Open Agent, a general-purpose autonomous work assistant.
 You solve the user's task by reasoning step by step and, when helpful, calling
 the tools available to you. When you have enough information, respond directly
 with the final answer.
+
+Current date and time: {current_date}
+
+Important:
+- When searching for real-time or current information, do NOT invent a specific
+  date. Use broad terms like "latest" or "today" unless the user explicitly
+  provides a date.
+- For web_search, write the query in the SAME language as the user's question.
+  Do NOT mix languages (e.g., avoid "today news 2026年7月2日"). For Chinese
+  news use queries like "今日新闻 最新消息" or "2026年7月2日 新闻".
+- Do NOT call file or shell tools unless the user explicitly asks for file or
+  system operations.
 
 Available tools:
 {tool_descriptions}
@@ -71,7 +84,10 @@ class Agent:
                 f"- {tool.name}: {tool.description}\n  parameters: {tool.parameters}"
             )
         joined = "\n".join(descriptions) if descriptions else "(no tools registered)"
-        return SYSTEM_PROMPT_TEMPLATE.format(tool_descriptions=joined)
+        current_date = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        return SYSTEM_PROMPT_TEMPLATE.format(
+            tool_descriptions=joined, current_date=current_date
+        )
 
     def _tool_schemas(self) -> list[ToolSchema]:
         schemas: list[ToolSchema] = []

@@ -37,6 +37,7 @@ by :class:`~open_agent.models.langchain_adapter.LangChainModelAdapter`).
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Sequence, TypedDict, Union
 
 from pydantic import BaseModel, Field
@@ -67,6 +68,18 @@ from open_agent.models.langchain_adapter import LangChainModelAdapter
 
 SYSTEM_PROMPT = """\
 You are Open Agent, a general-purpose autonomous work assistant with Agentic RAG capabilities.
+
+Current date and time: {current_date}
+
+Important:
+- When searching for real-time or current information, do NOT invent a specific
+  date. Use broad terms like "latest" or "today" unless the user explicitly
+  provides a date.
+- For web_search, write the query in the SAME language as the user's question.
+  Do NOT mix languages (e.g., avoid "today news 2026年7月2日"). For Chinese
+  news use queries like "今日新闻 最新消息" or "2026年7月2日 新闻".
+- Do NOT call file or shell tools unless the user explicitly asks for file or
+  system operations.
 
 You solve user tasks by:
 1. Understanding the intent of the question
@@ -204,7 +217,10 @@ class LangGraphAgent:
         tool_descriptions = "\n".join(
             f"- {t.name}: {t.description}" for t in self._tools
         ) or "(no tools available)"
-        self._system_prompt = SYSTEM_PROMPT.format(tool_descriptions=tool_descriptions)
+        current_date = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        self._system_prompt = SYSTEM_PROMPT.format(
+            tool_descriptions=tool_descriptions, current_date=current_date
+        )
 
         self._graph = self._build_graph()
 

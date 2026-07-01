@@ -222,13 +222,14 @@ export default function App() {
             )
           );
         },
-        onDone: (_response, steps, toolCalls) => {
+        onDone: (response, steps, toolCalls) => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
                 ? {
                     ...m,
                     streaming: false,
+                    content: response,
                     steps,
                     toolCalls: toolCalls.length > 0 ? toolCalls : toolCallsAccum,
                   }
