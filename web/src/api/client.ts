@@ -5,6 +5,7 @@ const BASE_URL: string = import.meta.env.VITE_API_URL ?? "";
 /** Events streamed over WebSocket during an agent run. */
 export type StreamEvent =
   | { type: "token"; content: string }
+  | { type: "thought"; content: string; step: number }
   | { type: "tool_start"; name: string; arguments: Record<string, unknown> }
   | { type: "tool_end"; name: string; observation: string; is_error: boolean }
   | { type: "done"; response: string; steps: number; tool_calls_made: ToolCallInfo[] };
@@ -53,6 +54,7 @@ export class ChatClient {
     sessionId: string,
     callbacks: {
       onToken?: (chunk: string) => void;
+      onThought?: (content: string, step: number) => void;
       onToolStart?: (name: string, args: Record<string, unknown>) => void;
       onToolEnd?: (name: string, observation: string, isError: boolean) => void;
       onDone?: (response: string, steps: number, toolCalls: ToolCallInfo[]) => void;
@@ -74,6 +76,9 @@ export class ChatClient {
         switch (data.type) {
           case "token":
             callbacks.onToken?.(data.content);
+            break;
+          case "thought":
+            callbacks.onThought?.(data.content, data.step);
             break;
           case "tool_start":
             callbacks.onToolStart?.(data.name, data.arguments);
@@ -146,6 +151,21 @@ export class ChatClient {
   /** Clear a session's history. */
   async clearSession(sessionId: string): Promise<void> {
     await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, { method: "DELETE" });
+  }
+
+  /** Upload a document file for RAG indexing. */
+  async uploadFile(file: File, kbName: string = "default"): Promise<{ status: string; filename: string; kb_name: string; chunks: number }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${this.baseUrl}/api/upload?kb_name=${encodeURIComponent(kbName)}`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText }));
+      throw new Error(err.message || `Upload failed: ${res.status}`);
+    }
+    return res.json();
   }
 
   /**

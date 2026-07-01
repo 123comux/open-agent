@@ -18,6 +18,8 @@ export interface Message {
   steps?: number;
   /** Tool calls made while producing this assistant message. */
   toolCalls?: ToolCallInfo[];
+  /** Thinking chain entries from the agent. */
+  thoughts?: string[];
   /** True while the assistant message is actively streaming tokens. */
   streaming?: boolean;
   timestamp: number;

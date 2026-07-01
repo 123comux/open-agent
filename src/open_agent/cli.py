@@ -49,6 +49,7 @@ class DemoModel:
         self._ModelResponse = ModelResponse
         self._ToolCall = ToolCall
         self._call_count = 0
+        self._last_content = ""
 
     async def chat(self, messages, tools=None):
         """Return canned responses that demonstrate the ReAct loop."""
@@ -62,7 +63,7 @@ class DemoModel:
         if self._call_count == 0:
             self._call_count += 1
             if "calculate" in user_msg or "compute" in user_msg or "math" in user_msg:
-                return self._ModelResponse(
+                response = self._ModelResponse(
                     content="",
                     tool_calls=[
                         self._ToolCall(
@@ -71,38 +72,51 @@ class DemoModel:
                         )
                     ],
                 )
-            if "list" in user_msg and "file" in user_msg:
-                return self._ModelResponse(
+            elif "list" in user_msg and "file" in user_msg:
+                response = self._ModelResponse(
                     content="",
                     tool_calls=[self._ToolCall(name="file", arguments={"action": "list", "path": "."})],
                 )
-            if "run" in user_msg or "execute" in user_msg or "command" in user_msg:
-                return self._ModelResponse(
+            elif "run" in user_msg or "execute" in user_msg or "command" in user_msg:
+                response = self._ModelResponse(
                     content="",
                     tool_calls=[
                         self._ToolCall(name="shell", arguments={"command": "echo Hello from Open Agent!"})
                     ],
                 )
-            # Default: respond directly
-            return self._ModelResponse(
-                content=(
-                    "Hello! I'm Open Agent running in **demo mode**.\n\n"
-                    "I can use tools like `python`, `shell`, and `file` to help you.\n\n"
-                    "Try asking me to:\n"
-                    "- Calculate something (e.g. 'calculate 2 to the power of 10')\n"
-                    "- List files in a directory\n"
-                    "- Run a shell command\n\n"
-                    "To use a real LLM, set `OPEN_AGENT_API_KEY` and run without `--demo`."
-                ),
+            else:
+                # Default: respond directly
+                response = self._ModelResponse(
+                    content=(
+                        "Hello! I'm Open Agent running in **demo mode**.\n\n"
+                        "I can use tools like `python`, `shell`, and `file` to help you.\n\n"
+                        "Try asking me to:\n"
+                        "- Calculate something (e.g. 'calculate 2 to the power of 10')\n"
+                        "- List files in a directory\n"
+                        "- Run a shell command\n\n"
+                        "To use a real LLM, set `OPEN_AGENT_API_KEY` and run without `--demo`."
+                    ),
+                    tool_calls=[],
+                )
+        else:
+            # Second call: summarize the tool result
+            self._call_count = 0
+            response = self._ModelResponse(
+                content="Done! The tool executed successfully. (Demo mode -- connect a real LLM for intelligent responses.)",
                 tool_calls=[],
             )
 
-        # Second call: summarize the tool result
-        self._call_count = 0
-        return self._ModelResponse(
-            content="Done! The tool executed successfully. (Demo mode -- connect a real LLM for intelligent responses.)",
-            tool_calls=[],
-        )
+        self._last_content = response.content
+        return response
+
+    async def stream_chat(self, messages, tools=None):
+        """Stream the cached response as a single chunk (demo mode).
+
+        :meth:`Agent.run_stream` calls this right after :meth:`chat` returned a
+        direct response, so we replay the cached content as one chunk.
+        """
+        if self._last_content:
+            yield self._last_content
 
 
 def _build_model(settings: Settings):
@@ -213,6 +227,59 @@ def _print_thinking_chain(output) -> None:
         console.print(table)
 
 
+async def _stream_agent_response(agent, user_input: str) -> None:
+    """Run the agent with streaming, printing events as they arrive.
+
+    Falls back to the non-streaming :meth:`run` for agents without
+    ``run_stream`` (e.g. :class:`LangGraphAgent`).
+    """
+    if not hasattr(agent, "run_stream"):
+        # Fallback for agents without streaming.
+        output = await agent.run(user_input)
+        _print_thinking_chain(output)
+        console.print(Panel(Markdown(output.response), title="assistant"))
+        console.print(
+            f"[dim]steps: {output.steps}, tool calls: {len(output.tool_calls_made)}[/dim]"
+        )
+        return
+
+    tool_calls_made: list[dict] = []
+    steps = 0
+    console.print("[bold cyan]assistant>[/bold cyan] ", end="")
+    async for event in agent.run_stream(user_input):
+        etype = event.get("type")
+        if etype == "tool_start":
+            console.print(
+                f"\n[dim cyan]→ calling {event.get('name', '?')}...[/dim cyan]"
+            )
+            tool_calls_made.append(
+                {
+                    "name": event.get("name", "?"),
+                    "arguments": event.get("arguments", {}),
+                    "observation": "",
+                    "is_error": False,
+                }
+            )
+        elif etype == "tool_end":
+            obs = event.get("observation", "")
+            if len(obs) > 200:
+                obs = obs[:200] + "..."
+            color = "dim red" if event.get("is_error") else "dim yellow"
+            console.print(f"[{color}]  ← {obs}[/{color}]")
+            if tool_calls_made:
+                tool_calls_made[-1]["observation"] = event.get("observation", "")
+                tool_calls_made[-1]["is_error"] = event.get("is_error", False)
+        elif etype == "token":
+            console.print(event.get("content", ""), end="", style="green")
+        elif etype == "done":
+            steps = event.get("steps", 0)
+            tool_calls_made = event.get("tool_calls_made", tool_calls_made)
+    console.print()  # newline after streaming tokens
+    console.print(
+        f"[dim]steps: {steps}, tool calls: {len(tool_calls_made)}[/dim]"
+    )
+
+
 @app.command()
 def chat(
     demo: bool = typer.Option(False, "--demo", help="Run with a mock model, no API key needed."),
@@ -242,12 +309,10 @@ def chat(
         if not user_input.strip():
             continue
         try:
-            output = asyncio.run(agent.run(user_input))
+            asyncio.run(_stream_agent_response(agent, user_input))
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Error:[/red] {exc}")
             continue
-        _print_thinking_chain(output)
-        console.print(Panel(Markdown(output.response), title="assistant"))
 
 
 @app.command()
@@ -259,12 +324,7 @@ def ask(
     """Ask the agent a single question and print the answer."""
     settings = get_settings()
     agent = _build_agent(settings, demo=demo, use_langgraph=langgraph)
-    output = asyncio.run(agent.run(question))
-    _print_thinking_chain(output)
-    console.print(Panel(Markdown(output.response), title="assistant"))
-    console.print(
-        f"[dim]steps: {output.steps}, tool calls: {len(output.tool_calls_made)}[/dim]"
-    )
+    asyncio.run(_stream_agent_response(agent, question))
 
 
 @app.command()

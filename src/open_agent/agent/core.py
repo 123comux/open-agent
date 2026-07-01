@@ -186,6 +186,7 @@ class Agent:
 
         Yields dicts with a ``type`` field:
 
+        - ``{'type': 'thought', 'content': ..., 'step': int}``
         - ``{'type': 'tool_start', 'name': ..., 'arguments': ...}``
         - ``{'type': 'tool_end', 'name': ..., 'observation': ..., 'is_error': bool}``
         - ``{'type': 'token', 'content': 'chunk'}``
@@ -242,6 +243,11 @@ class Agent:
             # ToolCall branch: announce, execute, then feed observation back.
             call: ToolCall = plan
             yield {
+                "type": "thought",
+                "content": f"Step {step}: Deciding to use {call.name} to gather information",
+                "step": step,
+            }
+            yield {
                 "type": "tool_start",
                 "name": call.name,
                 "arguments": call.arguments,
@@ -269,6 +275,11 @@ class Agent:
                 "name": call.name,
                 "observation": observation.text,
                 "is_error": observation.is_error,
+            }
+            yield {
+                "type": "thought",
+                "content": f"Step {step}: Received result from {call.name}, analyzing...",
+                "step": step,
             }
             messages.append(
                 Message(role="user", content=f"Observation: {observation.text}")

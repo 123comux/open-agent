@@ -180,6 +180,21 @@ function MessageBubble({ message }: { message: Message }) {
           isUser ? "items-end" : "items-start"
         }`}
       >
+        {!isUser && message.thoughts && message.thoughts.length > 0 && (
+          <details className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-zinc-500">
+              Thinking Chain ({message.thoughts.length} steps)
+            </summary>
+            <div className="mt-2 space-y-1">
+              {message.thoughts.map((t, i) => (
+                <div key={i} className="flex gap-2 text-xs text-zinc-400">
+                  <span className="text-emerald-400">→</span>
+                  <span>{t}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
         <div
           className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
             isUser

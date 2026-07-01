@@ -48,6 +48,7 @@ docs = [
 server = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.12",
 ]
 mcp = [
     "mcp>=0.1",
@@ -58,6 +59,7 @@ all = [
     "python-docx>=1.1",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.12",
     "mcp>=0.1",
 ]
 dev = [
@@ -73,9 +75,9 @@ open-agent = "open_agent.cli:app"
 open-agent-server = "open_agent.server.api:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/open-agent"
-Repository = "https://github.com/your-org/open-agent"
-Issues = "https://github.com/your-org/open-agent/issues"
+Homepage = "https://github.com/123comux/open-agent"
+Repository = "https://github.com/123comux/open-agent"
+Issues = "https://github.com/123comux/open-agent/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_agent"]

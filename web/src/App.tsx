@@ -22,6 +22,7 @@ export default function App() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [toolsLoading, setToolsLoading] = useState(true);
   const [sessionId, setSessionId] = useState(generateSessionId);
+  const [sessions, setSessions] = useState<string[]>([]);
   const [apiUrl, setApiUrl] = useState<string>(
     () => (import.meta.env.VITE_API_URL as string | undefined) ?? ""
   );
@@ -30,6 +31,15 @@ export default function App() {
   const cancelRef = useRef<(() => void) | null>(null);
 
   const client = useMemo(() => new ChatClient(apiUrl), [apiUrl]);
+
+  const refreshSessions = useCallback(() => {
+    client
+      .listSessions()
+      .then((s) => setSessions(s))
+      .catch(() => {
+        /* sessions unavailable; sidebar will just show empty list */
+      });
+  }, [client]);
 
   useEffect(() => {
     let active = true;
@@ -59,10 +69,70 @@ export default function App() {
     };
   }, [client]);
 
+  // Fetch sessions list on mount and whenever the session or client changes.
+  useEffect(() => {
+    refreshSessions();
+  }, [refreshSessions, sessionId]);
+
   // Cleanup any active stream on unmount
   useEffect(() => {
     return () => cancelRef.current?.();
   }, []);
+
+  // Switch to an existing session, loading its history into the message list.
+  const handleSelectSession = useCallback(
+    (id: string) => {
+      if (id === sessionId) return;
+      cancelRef.current?.();
+      cancelRef.current = null;
+      setError(null);
+      setSessionId(id);
+      setMessages([]);
+      client
+        .getSessionHistory(id)
+        .then((history) => {
+          setMessages(
+            history.map((m) => ({
+              id: newId(),
+              role: (m.role === "user" ? "user" : "assistant") as Message["role"],
+              content: m.content,
+              timestamp: Date.now(),
+            }))
+          );
+        })
+        .catch(() => {
+          /* history unavailable; leave messages empty */
+        });
+    },
+    [client, sessionId]
+  );
+
+  // Start a fresh session, clearing the current conversation.
+  const handleNewSession = useCallback(() => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+    setError(null);
+    setMessages([]);
+    setSessionId(generateSessionId());
+  }, []);
+
+  // Delete a session from the backend and refresh the sidebar list.
+  const handleDeleteSession = useCallback(
+    (id: string) => {
+      client
+        .clearSession(id)
+        .then(() => {
+          setSessions((prev) => prev.filter((s) => s !== id));
+          if (id === sessionId) {
+            handleNewSession();
+          }
+        })
+        .catch(() => {
+          /* deletion failed; ignore */
+        });
+    },
+    [client, sessionId, handleNewSession]
+  );
 
   const handleSend = useCallback(
     (text: string) => {
@@ -88,6 +158,7 @@ export default function App() {
         observation: string;
         is_error: boolean;
       }[] = [];
+      const thoughtsAccum: string[] = [];
 
       // Create placeholder assistant message that we update as tokens arrive
       setMessages((prev) => [
@@ -107,6 +178,16 @@ export default function App() {
             prev.map((m) =>
               m.id === assistantId
                 ? { ...m, content: m.content + chunk }
+                : m
+            )
+          );
+        },
+        onThought: (content) => {
+          thoughtsAccum.push(content);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? { ...m, thoughts: [...thoughtsAccum] }
                 : m
             )
           );
@@ -156,6 +237,7 @@ export default function App() {
           );
           setLoading(false);
           cancelRef.current = null;
+          refreshSessions();
         },
         onError: (err) => {
           setError(err);
@@ -175,12 +257,22 @@ export default function App() {
         },
       });
     },
-    [client, loading, sessionId]
+    [client, loading, sessionId, refreshSessions]
   );
 
   return (
     <div className="flex h-full w-full bg-[#0a0a0f] font-sans text-zinc-100">
-      <Sidebar tools={tools} loading={toolsLoading} healthy={healthy}>
+      <Sidebar
+        tools={tools}
+        loading={toolsLoading}
+        healthy={healthy}
+        sessions={sessions}
+        activeSessionId={sessionId}
+        onSelectSession={handleSelectSession}
+        onNewSession={handleNewSession}
+        onDeleteSession={handleDeleteSession}
+        onUploadFile={async (file) => { await client.uploadFile(file); }}
+      >
         <Settings
           apiUrl={apiUrl}
           onApiUrlChange={setApiUrl}
