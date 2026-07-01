@@ -149,7 +149,9 @@ def _build_model(settings: Settings):
     return model
 
 
-def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = False):
+async def _build_agent(
+    settings: Settings, demo: bool = False, use_langgraph: bool = False
+):
     """Construct an Agent from settings (heavy imports kept lazy)."""
     from open_agent.tools.builtin import FileTool, KnowledgeBaseTool, PythonTool, ShellTool, WebSearchTool
     from open_agent.tools.registry import ToolRegistry
@@ -175,6 +177,22 @@ def _build_agent(settings: Settings, demo: bool = False, use_langgraph: bool = F
         kb_tool = KnowledgeBaseTool()
     for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), kb_tool):
         registry.register(tool)
+
+    # Load MCP servers if configured.
+    if settings.mcp_servers_file:
+        try:
+            from open_agent.mcp import MCPClient, adapt_mcp_tools, load_mcp_servers
+
+            servers = load_mcp_servers(settings.mcp_servers_file)
+            if servers:
+                mcp_client = MCPClient(servers)
+                await mcp_client.connect()
+                for mcp_tool in adapt_mcp_tools(mcp_client):
+                    registry.register(mcp_tool)
+        except Exception as exc:  # pragma: no cover - optional integration
+            console.print(
+                f"[yellow]Warning: failed to load MCP servers: {exc}[/yellow]"
+            )
 
     if use_langgraph:
         try:
@@ -300,7 +318,7 @@ def chat(
 ) -> None:
     """Start an interactive REPL session with the agent."""
     settings = get_settings()
-    agent = _build_agent(settings, demo=demo, use_langgraph=langgraph)
+    agent = asyncio.run(_build_agent(settings, demo=demo, use_langgraph=langgraph))
     mode_label = "demo" if demo else f"{settings.model_provider}/{settings.model_name}"
     if langgraph:
         mode_label += " (LangGraph)"
@@ -336,7 +354,7 @@ def ask(
 ) -> None:
     """Ask the agent a single question and print the answer."""
     settings = get_settings()
-    agent = _build_agent(settings, demo=demo, use_langgraph=langgraph)
+    agent = asyncio.run(_build_agent(settings, demo=demo, use_langgraph=langgraph))
     asyncio.run(_stream_agent_response(agent, question))
 
 

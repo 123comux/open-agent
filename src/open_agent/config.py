@@ -34,6 +34,9 @@ class Settings(BaseModel):
     split_unit: str = "char"
     rag_top_k: int = 5
 
+    # MCP servers
+    mcp_servers_file: str = ""
+
     @classmethod
     def load(cls) -> Settings:
         """Load settings from environment variables (``OPEN_AGENT_`` prefix)."""
@@ -63,6 +66,7 @@ class Settings(BaseModel):
             chunk_overlap=int(env("CHUNK_OVERLAP", "50") or 50),
             split_unit=env("SPLIT_UNIT", "char") or "char",
             rag_top_k=int(env("RAG_TOP_K", "5") or 5),
+            mcp_servers_file=env("MCP_SERVERS_FILE", "") or "",
         )
 
 

@@ -7,6 +7,7 @@ packages raises a clear :class:`ImportError`.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -31,7 +32,7 @@ setup_logging()
 logger = get_logger("server")
 
 
-def _build_agent():
+async def _build_agent():
     """Construct an Agent and its registry from settings (lazy heavy imports)."""
     from open_agent.agent.core import Agent
     from open_agent.models.base import ModelInterface
@@ -79,6 +80,21 @@ def _build_agent():
         kb_tool = KnowledgeBaseTool()
     for tool in (ShellTool(), PythonTool(), FileTool(), WebSearchTool(), kb_tool):
         registry.register(tool)
+
+    # Load MCP servers if configured.
+    if settings.mcp_servers_file:
+        try:
+            from open_agent.mcp import MCPClient, adapt_mcp_tools, load_mcp_servers
+
+            servers = load_mcp_servers(settings.mcp_servers_file)
+            if servers:
+                mcp_client = MCPClient(servers)
+                await mcp_client.connect()
+                for mcp_tool in adapt_mcp_tools(mcp_client):
+                    registry.register(mcp_tool)
+        except Exception as exc:  # pragma: no cover - optional integration
+            logger.warning("Failed to load MCP servers: %s", exc)
+
     return (
         Agent(
             model=model,
@@ -135,7 +151,7 @@ open-agent serve
         {"name": "health", "description": "Health checks"},
     ],
 )
-_agent, _registry = _build_agent()
+_agent, _registry = asyncio.run(_build_agent())
 
 # CORS middleware
 app.add_middleware(

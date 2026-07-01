@@ -51,7 +51,7 @@ server = [
     "python-multipart>=0.0.12",
 ]
 mcp = [
-    "mcp>=0.1",
+    "mcp>=1.0.0",
 ]
 all = [
     "chromadb>=0.5",
@@ -60,7 +60,7 @@ all = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.12",
-    "mcp>=0.1",
+    "mcp>=1.0.0",
 ]
 dev = [
     "pytest>=8.0",
