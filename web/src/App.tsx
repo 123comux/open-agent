@@ -286,6 +286,16 @@ export default function App() {
           messages={messages}
           loading={loading}
           onSend={handleSend}
+          onStop={() => {
+            cancelRef.current?.();
+            cancelRef.current = null;
+            setLoading(false);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.streaming ? { ...m, streaming: false } : m
+              )
+            );
+          }}
           error={error}
         />
       </main>

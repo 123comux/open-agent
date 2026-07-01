@@ -1,11 +1,8 @@
-"""Builtin web search tool using DuckDuckGo's Lite and HTML endpoints.
+"""Builtin web search tool using Bing and DuckDuckGo as fallback.
 
-Tries the lightweight ``lite.duckduckgo.com/lite/`` endpoint first (simpler,
-more stable markup) and falls back to ``html.duckduckgo.com/html/`` when the
-Lite endpoint is unavailable or returns no usable results. Results are parsed
-into titles, URLs and snippets with regular expressions and rendered as
-numbered text. The tool is dependency-free beyond :mod:`httpx` and includes
-timeout handling plus a small inter-request delay for rate limiting.
+Primary search uses Bing (works in China), with DuckDuckGo's Lite and HTML
+endpoints as fallback for users outside China or with VPN. Results are parsed
+into titles, URLs and snippets with regular expressions.
 """
 from __future__ import annotations
 
@@ -13,7 +10,7 @@ import asyncio
 import re
 import time
 from html import unescape
-from urllib.parse import unquote
+from urllib.parse import unquote, urljoin
 
 import httpx
 
@@ -21,7 +18,7 @@ from open_agent.tools.base import Tool
 
 
 class WebSearchTool(Tool):
-    """Search the web via DuckDuckGo and return results as text."""
+    """Search the web via Bing (primary) or DuckDuckGo (fallback)."""
 
     name = "web_search"
     description = (
@@ -44,20 +41,17 @@ class WebSearchTool(Tool):
         "required": ["query"],
     }
 
+    BING_URL = "https://www.bing.com/search"
     LITE_URL = "https://lite.duckduckgo.com/lite/"
     HTML_URL = "https://html.duckduckgo.com/html/"
-    USER_AGENT = "open-agent/0.1 (+https://github.com/your-org/open-agent)"
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
-    # Minimum seconds between consecutive outbound search requests. DuckDuckGo
-    # rate-limits aggressive clients; a short delay keeps the tool reliable.
     RATE_LIMIT_SECONDS = 1.0
-
-    # Shared across instances so rapid repeated calls are throttled globally.
     _last_request_time: float = 0.0
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
     @staticmethod
     def _strip_tags(text: str) -> str:
         """Remove HTML tags, decode entities and collapse whitespace."""
@@ -67,12 +61,7 @@ class WebSearchTool(Tool):
 
     @staticmethod
     def _clean_url(url: str) -> str:
-        """Unwrap DuckDuckGo redirect URLs and normalize protocol-relative ones.
-
-        DuckDuckGo wraps result links in a redirect such as
-        ``//duckduckgo.com/l/?uddg=<encoded>``; the real target lives in the
-        ``uddg`` query parameter.
-        """
+        """Unwrap redirect URLs and normalize protocol-relative ones."""
         if not url:
             return url
         match = re.search(r"[?&]uddg=([^&]+)", url)
@@ -83,7 +72,6 @@ class WebSearchTool(Tool):
         return url
 
     async def _rate_limit(self) -> None:
-        """Sleep just long enough to honor ``RATE_LIMIT_SECONDS`` between calls."""
         if self.RATE_LIMIT_SECONDS <= 0:
             return
         now = time.monotonic()
@@ -93,15 +81,74 @@ class WebSearchTool(Tool):
         WebSearchTool._last_request_time = time.monotonic()
 
     # ------------------------------------------------------------------
-    # Parsing
+    # Bing parsing (primary — works in China)
+    # ------------------------------------------------------------------
+    def _parse_bing(self, html: str, max_results: int) -> list[dict[str, str]]:
+        """Parse Bing search results page.
+
+        Bing wraps results in <li class="b_algo"> blocks containing
+        <h2><a href="URL">Title</a></h2> and <p class="b_lineclamp...">snippet</p>.
+        """
+        results: list[dict[str, str]] = []
+
+        # Extract result blocks
+        blocks = re.findall(
+            r'<li\b[^>]*\bclass="b_algo"[^>]*>(.*?)</li>',
+            html,
+            re.DOTALL,
+        )
+
+        for block in blocks:
+            # Title + URL — Bing wraps result links in <h2 class="..."><a href="...">
+            # The h2 tag may carry attributes (class, id, etc.), so allow any attrs.
+            title_match = re.search(
+                r'<h2[^>]*>\s*<a\b([^>]*)>(.*?)</a>', block, re.DOTALL
+            )
+            if not title_match:
+                continue
+            attrs, title_html = title_match.groups()
+            href_match = re.search(r'href=["\']([^"\']+)["\']', attrs)
+            url = href_match.group(1) if href_match else ""
+            title = self._strip_tags(title_html)
+
+            # Snippet — Bing uses <p class="b_lineclampN"> inside <div class="b_caption">.
+            # Fall back to any <p> with class containing "b_" or any <p> at all.
+            snippet = ""
+            for pattern in [
+                r'<p\b[^>]*\bclass="b_lineclamp[^"]*"[^>]*>(.*?)</p>',
+                r'<div\b[^>]*\bclass="b_caption"[^>]*>.*?<p\b[^>]*>(.*?)</p>',
+                r'<p\b[^>]*\bclass="b_[^"]*"[^>]*>(.*?)</p>',
+                r'<p\b[^>]*>(.*?)</p>',
+            ]:
+                snippet_match = re.search(pattern, block, re.DOTALL)
+                if snippet_match:
+                    snippet = self._strip_tags(snippet_match.group(1))
+                    if snippet:
+                        break
+
+            results.append({"title": title, "url": url, "snippet": snippet})
+            if len(results) >= max_results:
+                break
+
+        return results
+
+    async def _search_bing(self, query: str, max_results: int) -> str:
+        """Search via Bing."""
+        await self._rate_limit()
+        headers = {"User-Agent": self.USER_AGENT, "Accept-Language": "zh-CN,en;q=0.9"}
+        params = {"q": query, "count": str(max_results * 2)}
+        async with httpx.AsyncClient(
+            timeout=self.TIMEOUT, follow_redirects=True
+        ) as client:
+            response = await client.get(self.BING_URL, params=params, headers=headers)
+            response.raise_for_status()
+            results = self._parse_bing(response.text, max_results)
+        return self._format(results)
+
+    # ------------------------------------------------------------------
+    # DuckDuckGo parsing (fallback)
     # ------------------------------------------------------------------
     def _parse_lite(self, html: str, max_results: int) -> list[dict[str, str]]:
-        """Parse ``lite.duckduckgo.com`` markup into result dicts.
-
-        Result links are ``<a rel="nofollow" class="result-link" href="URL">``
-        and snippets are ``<td class="result-snippet">`` cells. Attribute order
-        is matched flexibly so layout tweaks don't break parsing.
-        """
         snippets = [
             self._strip_tags(inner)
             for _, inner in re.findall(
@@ -116,24 +163,13 @@ class WebSearchTool(Tool):
                 continue
             href_match = re.search(r'href=["\']([^"\']+)["\']', attrs)
             url = self._clean_url(href_match.group(1)) if href_match else ""
-            results.append(
-                {
-                    "title": self._strip_tags(title),
-                    "url": url,
-                    "snippet": "",
-                }
-            )
+            results.append({"title": self._strip_tags(title), "url": url, "snippet": ""})
             if len(results) >= max_results:
                 break
         self._pair_snippets(results, snippets)
         return results
 
     def _parse_html(self, html: str, max_results: int) -> list[dict[str, str]]:
-        """Parse ``html.duckduckgo.com`` markup into result dicts.
-
-        Result links carry ``class="result__a"`` (URLs wrapped in a redirect)
-        and snippets carry ``class="result__snippet"``.
-        """
         snippets = [
             self._strip_tags(inner)
             for _, inner in re.findall(
@@ -148,23 +184,14 @@ class WebSearchTool(Tool):
                 continue
             href_match = re.search(r'href=["\']([^"\']+)["\']', attrs)
             url = self._clean_url(href_match.group(1)) if href_match else ""
-            results.append(
-                {
-                    "title": self._strip_tags(title),
-                    "url": url,
-                    "snippet": "",
-                }
-            )
+            results.append({"title": self._strip_tags(title), "url": url, "snippet": ""})
             if len(results) >= max_results:
                 break
         self._pair_snippets(results, snippets)
         return results
 
     @staticmethod
-    def _pair_snippets(
-        results: list[dict[str, str]], snippets: list[str]
-    ) -> None:
-        """Attach snippets to results by document order (1:1)."""
+    def _pair_snippets(results: list[dict[str, str]], snippets: list[str]) -> None:
         for i, result in enumerate(results):
             if i < len(snippets):
                 result["snippet"] = snippets[i]
@@ -182,7 +209,7 @@ class WebSearchTool(Tool):
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # Endpoints
+    # DuckDuckGo endpoints (fallback)
     # ------------------------------------------------------------------
     async def _search_lite(self, query: str, max_results: int) -> str:
         await self._rate_limit()
@@ -217,16 +244,33 @@ class WebSearchTool(Tool):
             return "Error: no query provided."
         max_results = int(kwargs.get("max_results", 5))
 
-        # Primary: lite.duckduckgo.com (more stable, simpler markup).
+        errors: list[str] = []
+
+        # Primary: Bing (works in China).
+        try:
+            results = await self._search_bing(query, max_results)
+            if results and results != "No results found.":
+                return results
+            errors.append("bing: no results parsed")
+        except Exception as exc:
+            errors.append(f"bing: {type(exc).__name__}: {exc}")
+
+        # Fallback 1: lite.duckduckgo.com.
         try:
             results = await self._search_lite(query, max_results)
             if results and results != "No results found.":
                 return results
-        except Exception:
-            pass
-
-        # Fallback: html.duckduckgo.com.
-        try:
-            return await self._search_html(query, max_results)
+            errors.append("ddg-lite: no results")
         except Exception as exc:
-            return f"Error performing search: {exc}"
+            errors.append(f"ddg-lite: {type(exc).__name__}: {exc}")
+
+        # Fallback 2: html.duckduckgo.com.
+        try:
+            results = await self._search_html(query, max_results)
+            if results and results != "No results found.":
+                return results
+            errors.append("ddg-html: no results")
+        except Exception as exc:
+            errors.append(f"ddg-html: {type(exc).__name__}: {exc}")
+
+        return "Error performing search: " + " | ".join(errors)

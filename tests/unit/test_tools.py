@@ -6,6 +6,7 @@ import sys
 from open_agent.tools.builtin.file import FileTool
 from open_agent.tools.builtin.python import PythonTool
 from open_agent.tools.builtin.shell import ShellTool
+from open_agent.tools.builtin.web_search import WebSearchTool
 
 
 def _echo_command() -> str:
@@ -142,3 +143,67 @@ async def test_file_tool_to_schema():
     assert schema["name"] == "file"
     assert "action" in schema["parameters"]["properties"]
     assert "path" in schema["parameters"]["properties"]
+
+
+# ---------------------------------------------------------------------------
+# WebSearchTool — Bing HTML parsing regression tests
+# (real Bing HTML uses <h2 class=""> with attributes and <p class="b_lineclampN">)
+# ---------------------------------------------------------------------------
+
+BING_HTML_SAMPLE = """
+<ol id="b_results" class="">
+<li class="b_algo" data-id iid=SERP.5331>
+<link rel="stylesheet" href="https://r.bing.com/rs/x.css" type="text/css"/>
+<h2 class=""><a target="_blank" href="https://example.com/news1" h="ID=SERP,5127.2">
+<strong>AI</strong> News | <strong>Latest News</strong> | Insights</a></h2>
+<div class="b_caption"><p class="b_lineclamp2">2 天之前 · AI News delivers the latest updates.</p>
+</div>
+</li>
+<li class="b_algo" data-id iid=SERP.5332>
+<h2><a href="https://example.com/news2">Second Result</a></h2>
+<p class="b_lineclamp4">Snippet for second result here.</p>
+</li>
+<li class="b_algo" data-id iid=SERP.5333>
+<h2 class="b_title"><a href="https://example.com/news3">Third Result</a></h2>
+<div class="b_caption"><p>Third snippet without b_lineclamp class.</p></div>
+</li>
+</ol>
+"""
+
+
+def test_parse_bing_extracts_title_url_snippet():
+    """Regression: <h2 class=""> with attributes must be parsed (not just bare <h2>)."""
+    tool = WebSearchTool()
+    results = tool._parse_bing(BING_HTML_SAMPLE, max_results=5)
+    assert len(results) == 3
+    assert results[0]["title"] == "AI News | Latest News | Insights"
+    assert results[0]["url"] == "https://example.com/news1"
+    assert "latest updates" in results[0]["snippet"]
+    assert results[1]["title"] == "Second Result"
+    assert results[1]["url"] == "https://example.com/news2"
+    assert results[2]["title"] == "Third Result"
+
+
+def test_parse_bing_respects_max_results():
+    tool = WebSearchTool()
+    results = tool._parse_bing(BING_HTML_SAMPLE, max_results=2)
+    assert len(results) == 2
+
+
+def test_parse_bing_empty_html():
+    tool = WebSearchTool()
+    assert tool._parse_bing("<html></html>", max_results=5) == []
+
+
+def test_web_search_tool_schema():
+    tool = WebSearchTool()
+    schema = tool.to_schema()
+    assert schema["name"] == "web_search"
+    assert "query" in schema["parameters"]["properties"]
+    assert schema["parameters"]["required"] == ["query"]
+
+
+async def test_web_search_no_query_returns_error():
+    tool = WebSearchTool()
+    result = await tool.execute(query="")
+    assert "Error" in result

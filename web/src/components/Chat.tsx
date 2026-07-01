@@ -14,6 +14,7 @@ interface ChatProps {
   messages: Message[];
   loading: boolean;
   onSend: (text: string) => void;
+  onStop: () => void;
   error: string | null;
 }
 
@@ -23,7 +24,7 @@ const EXAMPLES = [
   "Search the web for the latest news on AI agents",
 ];
 
-export function Chat({ messages, loading, onSend, error }: ChatProps) {
+export function Chat({ messages, loading, onSend, onStop, error }: ChatProps) {
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -107,21 +108,39 @@ export function Chat({ messages, loading, onSend, error }: ChatProps) {
             placeholder="Ask Open Agent to do something…"
             className="scrollbar-thin max-h-[200px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
           />
-          <button
-            type="submit"
-            disabled={!input.trim() || loading}
-            aria-label="Send message"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-zinc-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-          >
-            <svg
-              className="h-5 w-5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden="true"
+          {loading ? (
+            <button
+              type="button"
+              onClick={onStop}
+              aria-label="Stop generation"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500 text-white transition-colors hover:bg-rose-400"
             >
-              <path d="M3.105 3.105a.75.75 0 01.815-.165l13 5.5a.75.75 0 010 1.378l-13 5.5a.75.75 0 01-1.03-.94l1.6-4.003H9a.75.75 0 000-1.5H4.49l-1.6-4.003a.75.75 0 01.215-.767z" />
-            </svg>
-          </button>
+              <svg
+                className="h-4 w-4"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <rect x="5" y="5" width="10" height="10" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim()}
+              aria-label="Send message"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500 text-zinc-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+            >
+              <svg
+                className="h-5 w-5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M3.105 3.105a.75.75 0 01.815-.165l13 5.5a.75.75 0 010 1.378l-13 5.5a.75.75 0 01-1.03-.94l1.6-4.003H9a.75.75 0 000-1.5H4.49l-1.6-4.003a.75.75 0 01.215-.767z" />
+              </svg>
+            </button>
+          )}
         </div>
         <p className="mx-auto mt-2 max-w-3xl px-2 text-center text-xs text-zinc-600">
           Enter to send · Shift+Enter for a new line
