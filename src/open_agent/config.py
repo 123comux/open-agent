@@ -34,6 +34,10 @@ class Settings(BaseModel):
     split_unit: str = "char"
     rag_top_k: int = 5
 
+    # Reranker
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_k: int = 20
+
     # MCP servers
     mcp_servers_file: str = ""
 
@@ -66,6 +70,9 @@ class Settings(BaseModel):
             chunk_overlap=int(env("CHUNK_OVERLAP", "50") or 50),
             split_unit=env("SPLIT_UNIT", "char") or "char",
             rag_top_k=int(env("RAG_TOP_K", "5") or 5),
+            reranker_model=env("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+            or "BAAI/bge-reranker-v2-m3",
+            rerank_k=int(env("RERANK_K", "20") or 20),
             mcp_servers_file=env("MCP_SERVERS_FILE", "") or "",
         )
 

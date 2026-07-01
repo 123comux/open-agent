@@ -21,6 +21,8 @@ try:
 except ImportError:
     _HAS_RANK_BM25 = False
 
+from open_agent.rag.reranker import Reranker, build_reranker
+
 
 def _tokenize(text: str) -> list[str]:
     """Lowercase word tokens, used for both BM25 indexing and queries."""
@@ -88,6 +90,8 @@ class HybridRetriever:
         keyword_weight: float = 0.3,
         vector_weight: float = 0.7,
         top_k: int = 5,
+        reranker: Reranker | None = None,
+        rerank_k: int = 20,
     ) -> None:
         if keyword_weight < 0 or vector_weight < 0:
             raise ValueError("weights must be non-negative")
@@ -95,6 +99,8 @@ class HybridRetriever:
         self.keyword_weight = keyword_weight
         self.vector_weight = vector_weight
         self.top_k = top_k
+        self.reranker = reranker or build_reranker(None)
+        self.rerank_k = rerank_k
         # Cached keyword index over the store's corpus; rebuilt when the
         # store's document count changes.
         self._kw_index: Any = None
@@ -188,7 +194,7 @@ class HybridRetriever:
         self, query: str, top_k: int
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Fetch a pooled set of vector and keyword results in parallel."""
-        fetch_n = max(top_k * 3, 10)
+        fetch_n = max(top_k * 4, self.rerank_k, 10)
         vector_results, keyword_results = await asyncio.gather(
             self._vector_search(query, fetch_n),
             self._keyword_search(query, fetch_n),
@@ -257,12 +263,18 @@ class HybridRetriever:
             return []
         vector_results, keyword_results = await self._retrieve_both(query, k)
         fused = self._fuse(vector_results, keyword_results)
+
+        # Optional cross-encoder reranking over the top fused candidates.
+        if fused:
+            candidates = fused[: max(self.rerank_k, k)]
+            fused = self.reranker.rank(query, candidates)
+
         return [
             {
                 "id": d["id"],
                 "document": d["document"],
                 "metadata": d["metadata"],
-                "score": d["score"],
+                "score": d.get("rerank_score", d["score"]),
             }
             for d in fused[:k]
         ]

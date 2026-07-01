@@ -74,6 +74,8 @@ async def _build_agent():
             chunk_overlap=settings.chunk_overlap,
             split_unit=settings.split_unit,
             top_k=settings.rag_top_k,
+            reranker_model=settings.reranker_model,
+            rerank_k=settings.rerank_k,
         )
         kb_tool = KnowledgeBaseTool(kb_manager=kb_manager, top_k=settings.rag_top_k)
     except ImportError:
@@ -327,6 +329,8 @@ async def upload_document(
             chunk_overlap=_settings.chunk_overlap,
             split_unit=_settings.split_unit,
             top_k=_settings.rag_top_k,
+            reranker_model=_settings.reranker_model,
+            rerank_k=_settings.rerank_k,
         )
         chunk_count = await manager.index_file(tmp_path, kb_name)
         logger.info(

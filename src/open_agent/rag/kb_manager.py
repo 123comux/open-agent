@@ -31,6 +31,8 @@ class KBManager:
         chunk_overlap: int = 50,
         split_unit: str = "char",
         top_k: int = 5,
+        reranker_model: str | None = None,
+        rerank_k: int = 20,
     ) -> None:
         self.storage_dir = storage_dir
         self._embedding_model = embedding_model
@@ -38,6 +40,8 @@ class KBManager:
         self._chunk_overlap = chunk_overlap
         self._split_unit = split_unit
         self._top_k = top_k
+        self._reranker_model = reranker_model
+        self._rerank_k = rerank_k
         self._router = KnowledgeBaseRouter()
         self._kbs: dict[str, KnowledgeBase] = {}
 
@@ -56,6 +60,8 @@ class KBManager:
             chunk_overlap=self._chunk_overlap,
             split_unit=self._split_unit,
             top_k=self._top_k,
+            reranker_model=self._reranker_model,
+            rerank_k=self._rerank_k,
         )
         self._kbs[name] = kb
         self._router.add_kb(kb)

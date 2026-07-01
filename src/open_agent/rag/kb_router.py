@@ -13,6 +13,8 @@ except ImportError as exc:  # pragma: no cover
         "pip install numpy"
     ) from exc
 
+from open_agent.rag.reranker import build_reranker
+
 from open_agent.rag.hybrid_retriever import HybridRetriever
 from open_agent.rag.indexer import Indexer
 from open_agent.rag.stores.faiss_store import FAISSStore
@@ -48,6 +50,8 @@ class KnowledgeBase:
         chunk_overlap: int = 50,
         split_unit: str = "char",
         top_k: int = 5,
+        reranker_model: str | None = None,
+        rerank_k: int = 20,
     ) -> None:
         self.name = name
         self.description = description
@@ -58,7 +62,12 @@ class KnowledgeBase:
         self._indexer = Indexer(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap, split_unit=split_unit
         )
-        self._retriever = HybridRetriever(vector_store=self._store, top_k=top_k)
+        self._retriever = HybridRetriever(
+            vector_store=self._store,
+            top_k=top_k,
+            reranker=build_reranker(reranker_model),
+            rerank_k=rerank_k,
+        )
         self._doc_seq = 0
         self._routing_embedding: np.ndarray[Any, np.dtype[Any]] | None = None
 
