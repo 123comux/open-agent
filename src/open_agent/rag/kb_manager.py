@@ -125,6 +125,8 @@ class KBManager:
         if not root.is_dir():
             raise NotADirectoryError(dir_path)
         before = await kb.count()
+        all_texts: list[str] = []
+        all_metadatas: list[dict[str, str]] = []
         for path in sorted(root.iterdir()):
             if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
@@ -134,7 +136,10 @@ class KBManager:
                 continue
             if not loaded.text.strip():
                 continue
-            await kb.add_documents([loaded.text], metadatas=[{"source": str(path)}])
+            all_texts.append(loaded.text)
+            all_metadatas.append({"source": str(path)})
+        if all_texts:
+            await kb.add_documents(all_texts, metadatas=all_metadatas)
         await self._persist_kb(kb)
         after = await kb.count()
         return after - before

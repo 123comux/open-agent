@@ -1,6 +1,8 @@
 """Tests for the :class:`ToolExecutor`."""
 from __future__ import annotations
 
+import asyncio
+
 from open_agent.agent.executor import Observation, ToolExecutor
 from open_agent.tools.base import Tool
 from open_agent.tools.registry import ToolRegistry
@@ -66,3 +68,23 @@ def test_observation_str_and_defaults():
 
     err_obs = Observation("boom", is_error=True)
     assert err_obs.is_error is True
+
+
+async def test_executor_timeout_returns_error_observation():
+    """Tools that exceed the executor timeout return an error Observation."""
+
+    class SlowTool(Tool):
+        name = "slow"
+        description = "A tool that sleeps"
+        parameters = {"type": "object", "properties": {}}
+
+        async def execute(self, **kwargs: object) -> str:
+            await asyncio.sleep(10)
+            return "done"
+
+    registry = ToolRegistry()
+    registry.register(SlowTool())
+    executor = ToolExecutor(registry, timeout=0.05)
+    obs = await executor.execute("slow", {})
+    assert obs.is_error
+    assert "timed out" in obs.text.lower()

@@ -48,6 +48,7 @@ class MCPClient:
         self._process: asyncio.subprocess.Process | None = None
         self._http_client: httpx.AsyncClient | None = None
         self._initialized = False
+        self._request_timeout: float = 30.0
 
     async def connect(self) -> None:
         """Establish the transport connection and complete the MCP handshake."""
@@ -148,7 +149,15 @@ class MCPClient:
         payload = json.dumps(request) + "\n"
         self._process.stdin.write(payload.encode())
         await self._process.stdin.drain()
-        response_line = await self._process.stdout.readline()
+        try:
+            response_line = await asyncio.wait_for(
+                self._process.stdout.readline(),
+                timeout=self._request_timeout,
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"MCP server did not respond within {self._request_timeout}s"
+            )
         if not response_line:
             raise RuntimeError("MCP server closed the connection (stdio).")
         message = json.loads(response_line.decode())

@@ -44,6 +44,26 @@ class TestHealthEndpoint:
         assert response.json() == {"status": "ok"}
 
 
+class TestReadinessEndpoint:
+    def test_readiness_check_returns_503_when_agent_not_initialized(self, client, monkeypatch):
+        from open_agent.server import api as api_module
+
+        original_agent = api_module._agent
+        # Simulate agent not yet initialized
+        monkeypatch.setattr(api_module, "_agent", None)
+        response = client.get("/api/ready")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "not_ready"
+        assert data["reason"] == "agent_not_initialized"
+
+        # Restore the agent and verify readiness returns 200
+        monkeypatch.setattr(api_module, "_agent", original_agent)
+        response = client.get("/api/ready")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ready"}
+
+
 class TestToolsEndpoint:
     def test_list_tools(self, client):
         response = client.get("/api/tools")
@@ -392,6 +412,19 @@ class TestKnowledgeBaseEndpoints:
         assert response.status_code == 500
         assert response.json()["error"] == "indexing_failed"
 
+    def test_upload_size_limit_rejects_oversized_file(self, client, monkeypatch):
+        from open_agent.server import api as api_module
+
+        monkeypatch.setattr(api_module, "MAX_UPLOAD_BYTES", 10)
+
+        response = client.post(
+            "/api/upload",
+            files={"file": ("test.txt", b"a" * 100, "text/plain")},
+            params={"kb_name": "test-kb"},
+        )
+        assert response.status_code == 413
+        assert response.json()["error"] == "file_too_large"
+
 
 # ---------------------------------------------------------------------------
 # Trace endpoints
@@ -508,6 +541,46 @@ class TestSettingsEndpoint:
         response = client.post("/api/settings", json={"max_steps": 99})
         assert response.status_code == 500
         assert response.json()["error"] == "rebuild_failed"
+
+    def test_update_settings_rollback_restores_old_settings(self, client, monkeypatch):
+        from open_agent.server import api as api_module
+
+        async def failing_build():
+            raise RuntimeError("rebuild failed")
+
+        monkeypatch.setattr(api_module, "_build_agent", failing_build)
+        monkeypatch.setattr(api_module, "_settings", api_module._settings)
+        monkeypatch.setattr(api_module, "_agent", api_module._agent)
+        monkeypatch.setattr(api_module, "_registry", api_module._registry)
+        monkeypatch.setattr("open_agent.config.set_settings", lambda s: None)
+
+        old_max_steps = api_module._settings.max_steps
+        new_max_steps = old_max_steps + 100
+
+        response = client.post("/api/settings", json={"max_steps": new_max_steps})
+        assert response.status_code == 500
+        assert response.json()["error"] == "rebuild_failed"
+        # After rollback, settings should be the OLD value, not the new one
+        assert api_module._settings.max_steps == old_max_steps
+
+    def test_update_settings_rebuilds_kb_manager_when_kb_fields_change(self, client, monkeypatch):
+        from open_agent.server import api as api_module
+
+        async def fake_build():
+            return ("mock_agent", "mock_registry", "mock_tracer")
+
+        monkeypatch.setattr(api_module, "_build_agent", fake_build)
+        monkeypatch.setattr(api_module, "_settings", api_module._settings)
+        monkeypatch.setattr(api_module, "_agent", api_module._agent)
+        monkeypatch.setattr(api_module, "_registry", api_module._registry)
+        monkeypatch.setattr(api_module, "_kb_manager", "sentinel_kb_manager")
+        monkeypatch.setattr("open_agent.config.set_settings", lambda s: None)
+
+        new_chunk_size = api_module._settings.chunk_size + 100
+        response = client.post("/api/settings", json={"chunk_size": new_chunk_size})
+        assert response.status_code == 200
+        # KB manager should be invalidated so it gets rebuilt with new settings
+        assert api_module._kb_manager is None
 
 
 # ---------------------------------------------------------------------------

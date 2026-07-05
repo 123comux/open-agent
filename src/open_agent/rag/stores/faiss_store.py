@@ -163,6 +163,13 @@ class FAISSStore:
 
     def _load_sync(self, path: str) -> None:
         index = faiss.read_index(path)
+        if index.d != self._dim:
+            raise RuntimeError(
+                f"Stored FAISS index dimension ({index.d}) does not match the "
+                f"current embedding model dimension ({self._dim}). The knowledge "
+                f"base was created with a different embedding model. Re-index "
+                f"the knowledge base or restore the original model."
+            )
         self._index = index
         self._dim = index.d
         meta_path = self._meta_path(path)

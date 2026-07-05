@@ -68,6 +68,14 @@ class ShellTool(Tool):
                 pass
             await proc.wait()
             return f"Error: command timed out after {timeout}s."
+        except asyncio.CancelledError:
+            # Executor timeout injected cancellation — kill the subprocess
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            raise  # Re-raise so the caller knows execution was cancelled
         stdout = stdout_b.decode("utf-8", errors="replace") if stdout_b else ""
         stderr = stderr_b.decode("utf-8", errors="replace") if stderr_b else ""
         if proc.returncode == 0:

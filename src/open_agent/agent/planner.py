@@ -56,12 +56,9 @@ class Planner:
         if not content:
             return None
         # Fenced JSON block: ```json\n{...}\n``` (or bare ```).
-        # Greedy `{.*}` (with re.DOTALL) captures nested objects so a tool call
-        # like {"name":"x","arguments":{"a":{"b":1}}} is not truncated at the
-        # first inner closing brace. _try_json will reject the match if the
-        # captured span is not valid JSON.
-        fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
-        if fence_match:
+        # Iterate over each fenced block separately so a greedy match doesn't
+        # swallow multiple blocks into one invalid JSON blob.
+        for fence_match in re.finditer(r"```(?:json)?\s*(.*?)\s*```", content, re.DOTALL):
             candidate = Planner._try_json(fence_match.group(1))
             if candidate is not None:
                 return candidate

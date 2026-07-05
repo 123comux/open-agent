@@ -48,4 +48,4 @@ ENV OPEN_AGENT_OBSERVABILITY_OUTPUT_DIR=/app/.open_agent_traces
 EXPOSE 8000
 
 # Default: start the API server.
-CMD ["open-agent", "serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["open-agent", "serve", "0.0.0.0", "8000"]

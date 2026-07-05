@@ -52,7 +52,19 @@ async def request_with_retry(
                     try:
                         retry_after = float(int(raw))
                     except (TypeError, ValueError):
-                        retry_after = 0.0
+                        try:
+                            from datetime import datetime, timezone
+                            from email.utils import parsedate_to_datetime
+                            dt = parsedate_to_datetime(raw)
+                            if dt is not None:
+                                retry_after = max(
+                                    0.0,
+                                    (dt - datetime.now(timezone.utc)).total_seconds(),
+                                )
+                            else:
+                                retry_after = 0.0
+                        except (TypeError, ValueError, OverflowError):
+                            retry_after = 0.0
             last_exc = httpx.HTTPStatusError(
                 f"HTTP {response.status_code}",
                 request=response.request,

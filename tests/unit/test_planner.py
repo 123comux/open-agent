@@ -91,3 +91,48 @@ def test_parse_plain_text_not_starting_with_brace_is_direct_response():
     plan = planner.parse(resp)
     assert isinstance(plan, DirectResponse)
     assert "braces" in plan.text
+
+
+def test_parse_nested_json_arguments():
+    content = (
+        '```json\n'
+        '{"name": "shell", "arguments": '
+        '{"command": "echo hi", "opts": {"nested": {"deep": true}}}}\n'
+        '```'
+    )
+    response = ModelResponse(content=content)
+    plan = Planner().parse(response)
+    assert isinstance(plan, ToolCall)
+    assert plan.name == "shell"
+    assert plan.arguments["opts"]["nested"]["deep"] is True
+
+
+def test_parse_multiple_fenced_blocks_uses_first_valid():
+    content = (
+        '```json\n'
+        '{"name": "shell", "arguments": {"command": "echo first"}}\n'
+        '```\n'
+        'More text\n'
+        '```json\n'
+        '{"name": "shell", "arguments": {"command": "echo second"}}\n'
+        '```'
+    )
+    response = ModelResponse(content=content)
+    plan = Planner().parse(response)
+    assert isinstance(plan, ToolCall)
+    assert plan.arguments["command"] == "echo first"
+
+
+def test_parse_fenced_block_with_non_json_content_skipped():
+    content = (
+        '```python\n'
+        'print("hello")\n'
+        '```\n'
+        '```json\n'
+        '{"name": "shell", "arguments": {"command": "echo hi"}}\n'
+        '```'
+    )
+    response = ModelResponse(content=content)
+    plan = Planner().parse(response)
+    assert isinstance(plan, ToolCall)
+    assert plan.name == "shell"

@@ -214,9 +214,13 @@ by `open_agent.config.Settings`:
 | `OPEN_AGENT_BASE_URL`               | `https://api.openai.com`    | Base URL of the model endpoint (OpenAI-compatible).      |
 | `OPEN_AGENT_MODEL_NAME`             | `gpt-4o-mini`               | Model identifier passed to the provider.                 |
 | `OPEN_AGENT_MAX_STEPS`              | `10`                        | Maximum ReAct iterations per turn (runaway protection).  |
+| `OPEN_AGENT_MAX_CONTEXT_TOKENS`     | `8000`                      | Maximum context window tokens per request.               |
 | `OPEN_AGENT_REQUEST_TIMEOUT`        | `60`                        | Per-request timeout in seconds for model calls.          |
 | `OPEN_AGENT_SERVER_HOST`            | `127.0.0.1`                 | Bind host for the FastAPI server.                        |
 | `OPEN_AGENT_SERVER_PORT`            | `8000`                      | Bind port for the FastAPI server.                        |
+| `OPEN_AGENT_SESSION_STORAGE_DIR`    | `.open_agent_sessions`      | Directory for persisting session history.                |
+| `OPEN_AGENT_API_AUTH_TOKEN`         | `""`                        | API auth token; empty disables authentication.           |
+| `OPEN_AGENT_CORS_ORIGINS`           | `""`                        | Comma-separated allowed CORS origins.                    |
 | `OPEN_AGENT_SHORT_TERM_MEMORY_SIZE` | `20`                        | Number of recent messages kept in short-term memory.     |
 | `OPEN_AGENT_EMBEDDING_MODEL`        | `BAAI/bge-small-zh-v1.5`    | Sentence-transformer model used for embeddings.          |
 | `OPEN_AGENT_CHUNK_SIZE`             | `500`                       | Chunk size for document splitting.                       |
@@ -230,6 +234,9 @@ by `open_agent.config.Settings`:
 | `OPEN_AGENT_ENABLE_LONG_TERM_MEMORY`| `false`                     | Enable vector-backed long-term memory.                   |
 | `OPEN_AGENT_LONG_TERM_MEMORY_DIR`   | `.open_agent_long_term`     | Storage directory for long-term memory.                  |
 | `OPEN_AGENT_LONG_TERM_MEMORY_TOP_K` | `3`                         | Number of long-term memories retrieved.                  |
+| `OPEN_AGENT_ENABLE_TOOL_SANDBOX`    | `false`                     | Enable filesystem sandbox for tools.                     |
+| `OPEN_AGENT_SANDBOX_ALLOWED_PATHS`  | `""`                        | Comma-separated paths tools may access.                  |
+| `OPEN_AGENT_SANDBOX_BLOCKED_PATHS`  | `""`                        | Comma-separated paths tools are denied.                  |
 | `OPEN_AGENT_ENABLE_OBSERVABILITY`   | `true`                      | Enable trace/log collection.                             |
 | `OPEN_AGENT_OBSERVABILITY_PROVIDER` | `local`                     | One of `local`, `langsmith`, `langfuse`.                 |
 | `OPEN_AGENT_LANGSMITH_API_KEY`      | `""`                        | LangSmith personal API key.                              |

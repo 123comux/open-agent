@@ -35,7 +35,9 @@ services:
       - OPEN_AGENT_LANGSMITH_PROJECT=${OPEN_AGENT_LANGSMITH_PROJECT:-open-agent}
     volumes:
       - ./data:/app/data
+      - ./.open_agent_kb_indexes:/app/.open_agent_kb_indexes
       - ./.open_agent_sessions:/app/.open_agent_sessions
+      - ./.open_agent_long_term:/app/.open_agent_long_term
       - ./.open_agent_traces:/app/.open_agent_traces
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]

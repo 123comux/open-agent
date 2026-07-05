@@ -34,11 +34,9 @@ jobs:
       - name: Lint with ruff
         run: ruff check src tests
 
-      # Strict mypy is enabled; historical type debt is being cleaned up.
-      # Do not block CI on pre-existing type errors.
+      # Strict mypy is enforced — type errors fail the build.
       - name: Type-check with mypy
         run: mypy src/open_agent
-        continue-on-error: true
 
       - name: Run tests with coverage
         run: pytest --cov=open_agent --cov-report=xml --cov-report=term-missing

@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from fastapi.responses import Response
 
-from open_agent.config import get_settings
+from open_agent.config import Settings, get_settings
 from open_agent.logging_config import get_logger, setup_logging
 from open_agent.memory.session_manager import SessionManager
 from open_agent.observability.tracer import LocalJsonlTracer, NoOpTracer, Tracer
@@ -378,6 +378,17 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/ready", tags=["health"])
+async def readiness_check() -> dict[str, object] | JSONResponse:
+    """Readiness check — verifies the agent is initialized."""
+    if _agent is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": "agent_not_initialized"},
+        )
+    return {"status": "ready"}
+
+
 @app.get("/api/tools", tags=["tools"], dependencies=[Depends(_require_auth)])
 async def list_tools() -> dict[str, Any]:
     """List the names and schemas of available tools."""
@@ -436,7 +447,7 @@ async def ws_chat(websocket: WebSocket) -> None:
     token = _settings.api_auth_token
     if token:
         auth = websocket.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != token:
+        if not auth.startswith("Bearer ") or not secrets.compare_digest(auth[7:], token):
             await websocket.close(code=4001, reason="Unauthorized")
             return
     try:
@@ -755,22 +766,15 @@ async def update_settings_endpoint(request: SettingsUpdateRequest) -> dict[str, 
 
     updates = request.model_dump(exclude_unset=True)
     old_settings = _settings.model_copy(deep=True)
+    old_kb_manager = _kb_manager
+    old_session_manager = _session_manager
     new_settings = _settings.model_copy(update=updates)
+    # Re-validate to run model_validator (model_copy bypasses it).
+    new_settings = Settings.model_validate(new_settings.model_dump())
     from open_agent.config import set_settings
 
     set_settings(new_settings)
     _settings = new_settings
-
-    try:
-        _agent, _registry, _tracer = await _build_agent()
-    except Exception as exc:
-        logger.error("Failed to rebuild agent after settings update: %s", exc, exc_info=True)
-        set_settings(old_settings)
-        _settings = old_settings
-        return JSONResponse(
-            status_code=500,
-            content={"error": "rebuild_failed", "message": str(exc)},
-        )
 
     kb_fields = {
         "chunk_size",
@@ -789,6 +793,19 @@ async def update_settings_endpoint(request: SettingsUpdateRequest) -> dict[str, 
         _session_manager = SessionManager(
             max_messages=_settings.short_term_memory_size,
             storage_dir=_settings.session_storage_dir,
+        )
+
+    try:
+        _agent, _registry, _tracer = await _build_agent()
+    except Exception as exc:
+        logger.error("Failed to rebuild agent after settings update: %s", exc, exc_info=True)
+        set_settings(old_settings)
+        _settings = old_settings
+        _kb_manager = old_kb_manager
+        _session_manager = old_session_manager
+        return JSONResponse(
+            status_code=500,
+            content={"error": "rebuild_failed", "message": str(exc)},
         )
 
     logger.info("Runtime settings updated: %s", ", ".join(updates.keys()))

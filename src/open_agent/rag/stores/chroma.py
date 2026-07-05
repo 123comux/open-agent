@@ -40,7 +40,10 @@ class ChromaStore:
             self._client = chromadb.Client()
         else:
             self._client = chromadb.PersistentClient(path=persist_path)
-        self._collection = self._client.get_or_create_collection(name=collection_name)
+        self._collection = self._client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
 
     async def add(
         self,
