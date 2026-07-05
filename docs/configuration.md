@@ -43,13 +43,84 @@ reload_settings()                # 清空缓存并重新从环境加载
 
 | 变量 | 类型 | 默认 | 说明 | 示例 |
 |---|---|---|---|---|
-| `OPEN_AGENT_MODEL_PROVIDER` | `Literal["openai","anthropic","ollama"]` | `openai` | 模型 provider。非法值回退到 `openai`。 | `anthropic` |
+| `OPEN_AGENT_MODEL_PROVIDER` | `Literal["openai","anthropic","ollama","zhipu"]` | `openai` | 模型 provider。`zhipu` 开箱即用智谱端点；其余 20+ 家国内外 provider 可通过 `openai` + 自定义 `base_url` 接入（见下方速查表）。非法值回退到 `openai`。 | `zhipu` |
 | `OPEN_AGENT_API_KEY` | `str` | `""` | Provider 的 API Key。Ollama 可留空。 | `sk-...` |
 | `OPEN_AGENT_BASE_URL` | `str` | `https://api.openai.com/v1` | OpenAI 兼容端点。Anthropic/Ollama 各自的 provider 会忽略此值或按需使用。 | `https://open.bigmodel.cn/api/paas/v4` |
 | `OPEN_AGENT_MODEL_NAME` | `str` | `gpt-4o-mini` | 模型标识符，透传给 provider。 | `claude-3-5-sonnet-20241022` |
 | `OPEN_AGENT_MAX_STEPS` | `int` | `10` | 单轮 ReAct 最大迭代数（防失控）。 | `15` |
 | `OPEN_AGENT_MAX_CONTEXT_TOKENS` | `int` | `8000` | 单次 LLM 请求的最大上下文 token 数；超出会按 `truncate_messages` 截断。 | `16000` |
 | `OPEN_AGENT_REQUEST_TIMEOUT` | `float` | `60.0` | 单次模型请求超时（秒）。 | `120.0` |
+
+### OpenAI 兼容 provider 速查表
+
+OpenAI 的 `/v1/chat/completions` 协议已成为行业事实标准，**国内外 95%+ 的 LLM provider 都提供兼容端点**。除下表列出的四类原生 provider 外，其余均可通过 `MODEL_PROVIDER=openai` + 自定义 `BASE_URL` 接入，无需任何代码改动。
+
+**原生 provider（开箱即用，无需手填 base_url）**
+
+| `MODEL_PROVIDER` | Provider | 默认 base_url | 默认模型 | 备注 |
+|---|---|---|---|---|
+| `openai` | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` | 原生规范，兼容端点的基准 |
+| `anthropic` | Anthropic Claude | — | — | 使用 Anthropic 自有 API（非 OpenAI 兼容） |
+| `ollama` | Ollama（本地） | `http://localhost:11434/v1` | — | 完全免费，不需账号 |
+| `zhipu` | 智谱 AI (GLM) | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` | GLM-4-Flash 免费 |
+
+**国内 OpenAI 兼容 provider（设 `MODEL_PROVIDER=openai` + 下表 base_url）**
+
+| Provider | `BASE_URL` | 推荐 `MODEL_NAME` | 获取 Key |
+|---|---|---|---|
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` / `deepseek-reasoner` | platform.deepseek.com |
+| Moonshot / Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` / `moonshot-v1-32k` | platform.moonshot.cn |
+| 通义千问 Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-turbo` / `qwen-plus` | dashscope.aliyun.com |
+| 百度文心 | `https://qianfan.baidubce.com/v2` | `ernie-4.0-8k-latest` | qianfan.baidubce.com |
+| MiniMax | `https://api.minimax.chat/v1` | `abab6.5-chat` | platform.minimaxi.com |
+| 百川 Baichuan | `https://api.baichuan-ai.com/v1` | `Baichuan4-Turbo` | platform.baichuan-ai.com |
+| 字节豆包 Doubao | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-pro-32k` | volcengine.com |
+| 零一万物 Yi | `https://api.lingyiwanwu.com/v1` | `yi-large` | platform.lingyiwanwu.com |
+| 阶跃星辰 Step | `https://api.stepfun.com/v1` | `step-1-8k` | platform.stepfun.com |
+
+**国外 OpenAI 兼容 provider**
+
+| Provider | `BASE_URL` | 推荐 `MODEL_NAME` | 备注 |
+|---|---|---|---|
+| Mistral | `https://api.mistral.ai/v1` | `mistral-large-latest` | 欧洲开源厂商 |
+| Groq | `https://api.groq.com/openai/v1` | `llama-3.1-8b-instant` | 超快推理 |
+| Together AI | `https://api.together.xyz/v1` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | 开源模型聚合 |
+| Perplexity | `https://api.perplexity.ai` | `llama-3.1-sonar-large-128k-online` | 在线搜索增强 |
+| Fireworks AI | `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/llama-v3p1-70b-instruct` | 开源模型聚合 |
+
+**本地部署（OpenAI 兼容）**
+
+| Provider | `BASE_URL` | 说明 |
+|---|---|---|
+| vLLM | `http://localhost:8000/v1` | 高性能 GPU 推理 |
+| LocalAI | `http://localhost:8080/v1` | CPU 推理 |
+| LM Studio | `http://localhost:1234/v1` | 桌面应用 |
+| LiteLLM proxy | `http://localhost:4000/v1` | **统一代理 100+ provider，一个端点接所有** |
+
+**不兼容 OpenAI 协议的（需原生 provider 或转换层）**
+
+- **Anthropic** — 自有 API 格式（消息必须严格交替、`max_tokens` 必填）→ 项目已内置 `AnthropicModel`，设 `MODEL_PROVIDER=anthropic` 即可。
+- **Google Gemini 原生 API** — 有 OpenAI 兼容层但多模态等功能受限；若只需文本对话，可用 `MODEL_PROVIDER=openai` + `https://generativelanguage.googleapis.com/v1beta/openai/`。
+- **AWS Bedrock** — 使用 AWS SigV4 签名认证，非 Bearer token；建议在前端部署 LiteLLM proxy 转换。
+
+!!! tip "一个配置走遍所有 provider"
+    下面的 `.env` 模板适用于**任何** OpenAI 兼容 provider，只需替换三处：
+
+    ```dotenv
+    OPEN_AGENT_MODEL_PROVIDER=openai
+    OPEN_AGENT_BASE_URL=<上表中的 base_url>
+    OPEN_AGENT_API_KEY=<对应 provider 的 key>
+    OPEN_AGENT_MODEL_NAME=<上表中的 model_name>
+    ```
+
+    例如接入 DeepSeek：
+
+    ```dotenv
+    OPEN_AGENT_MODEL_PROVIDER=openai
+    OPEN_AGENT_BASE_URL=https://api.deepseek.com/v1
+    OPEN_AGENT_API_KEY=sk-你的DeepSeekKey
+    OPEN_AGENT_MODEL_NAME=deepseek-chat
+    ```
 
 ### RAG / 向量化
 
