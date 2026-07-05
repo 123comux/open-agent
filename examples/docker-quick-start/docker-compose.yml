@@ -1,0 +1,67 @@
+# Docker Quick Start — 5 分钟体验 Open Agent
+#
+# 这个 compose 文件独立于项目根目录的 docker-compose.yml（那个是生产部署用的）。
+# 它仅用于快速体验：构建根目录的 Dockerfile，暴露 8000 端口，挂载示例文档，
+# 并通过 .env 注入最小配置（API key 等）。
+#
+# 用法：
+#   1. cp .env.example .env  并填入 OPEN_AGENT_API_KEY
+#   2. docker compose up -d --build
+#   3. bash init-and-query.sh   （Windows 用 .\init-and-query.ps1）
+#   4. 浏览器打开 http://localhost:8000/docs
+
+services:
+  open-agent-demo:
+    container_name: open-agent-demo
+    build:
+      # 引用项目根目录的 Dockerfile（d:\github1\Dockerfile）。
+      context: ../../
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # ---- 最小演示配置（硬编码的合理默认值，覆盖 .env 中的同名变量）----
+      # 启用 Bearer Token 鉴权，所有 /api/* 接口（除健康检查外）都需要携带。
+      - OPEN_AGENT_API_AUTH_TOKEN=demo-token-please-change
+      # 演示环境放开 CORS，方便本地浏览器直接调用。
+      - OPEN_AGENT_CORS_ORIGINS=*
+      # 启用工具沙箱，限制文件/shell 工具的访问范围。
+      - OPEN_AGENT_ENABLE_TOOL_SANDBOX=true
+      # 启用可观测性，把 trace 写入持久化卷。
+      - OPEN_AGENT_ENABLE_OBSERVABILITY=true
+      - OPEN_AGENT_OBSERVABILITY_PROVIDER=local
+      # 默认使用 OpenAI；可被 .env 中的 OPEN_AGENT_MODEL_PROVIDER 覆盖。
+      - OPEN_AGENT_MODEL_PROVIDER=openai
+      # 容器内服务绑定。
+      - OPEN_AGENT_SERVER_HOST=0.0.0.0
+      - OPEN_AGENT_SERVER_PORT=8000
+      # 持久化目录（与下方 named volumes 对应）。
+      - OPEN_AGENT_SESSION_STORAGE_DIR=/app/.open_agent_sessions
+      - OPEN_AGENT_OBSERVABILITY_OUTPUT_DIR=/app/.open_agent_traces
+    volumes:
+      # 示例文档：以只读方式挂载到容器内 /data/sample-docs，供 RAG 索引。
+      - ./sample-docs:/data/sample-docs:ro
+      # 持久化命名卷：知识库索引、会话、trace。
+      - kb_indexes:/app/.open_agent_kb_indexes
+      - sessions:/app/.open_agent_sessions
+      - traces:/app/.open_agent_traces
+    healthcheck:
+      # /api/ready 在 agent 初始化完成后返回 200，否则返回 503。
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/api/ready',timeout=5); sys.exit(0 if r.status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  kb_indexes:
+  sessions:
+  traces:

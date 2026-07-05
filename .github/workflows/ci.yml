@@ -39,7 +39,7 @@ jobs:
         run: mypy src/open_agent
 
       - name: Run tests with coverage
-        run: pytest --cov=open_agent --cov-report=xml --cov-report=term-missing
+        run: pytest tests/ --cov=src/open_agent --cov-report=term-missing --cov-report=xml --cov-fail-under=70
 
       - name: Upload coverage artifact
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'

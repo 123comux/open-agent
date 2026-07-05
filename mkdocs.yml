@@ -1,0 +1,107 @@
+site_name: Open Agent
+site_description: A general-purpose Agentic RAG autonomous work assistant
+site_url: https://github.com/123comux/open-agent
+repo_url: https://github.com/123comux/open-agent
+repo_name: 123comux/open-agent
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - navigation.tracking
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+    - search.share
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: 切换至暗色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: 切换至亮色模式
+  font:
+    text: Noto Sans SC
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+
+markdown_extensions:
+  - admonition
+  - codehilite:
+      guess_lang: false
+  - footnotes
+  - toc:
+      permalink: true
+      toc_depth: 3
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        case: lower
+  - attr_list
+  - md_in_html
+  - def_list
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.magiclink:
+      repo_url_shortener: true
+      repo_url_shorthand: true
+      user: 123comux
+      repo: open-agent
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.details
+
+nav:
+  - 首页: index.md
+  - 快速开始: quickstart.md
+  - 架构设计: architecture.md
+  - 配置参考: configuration.md
+  - 工具系统: tools.md
+  - RAG 知识库: rag.md
+  - API 参考: api.md
+  - 可观测性: observability.md
+  - 部署指南: deployment.md
+  - 开发指南: development.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/123comux/open-agent
+  generator:
+    name: Open Agent Docs

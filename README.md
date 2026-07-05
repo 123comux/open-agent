@@ -4,6 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
+[![Coverage](https://img.shields.io/badge/coverage-70%25-brightgreen.svg)](https://github.com/123comux/open-agent/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://123comux.github.io/open-agent/)
 
 > A general-purpose Agentic RAG autonomous work assistant with multi-tool support.
 
