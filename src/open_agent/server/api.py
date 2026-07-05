@@ -15,12 +15,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
+from dotenv import load_dotenv
 from fastapi.responses import Response
 
-from open_agent.config import Settings, get_settings
-from open_agent.logging_config import get_logger, setup_logging
-from open_agent.memory.session_manager import SessionManager
-from open_agent.observability.tracer import LocalJsonlTracer, NoOpTracer, Tracer
+# Load .env from CWD before any settings are read so the server picks up
+# local configuration without manual environment variable setup.
+load_dotenv()
+
+from open_agent.config import Settings, get_settings  # noqa: E402
+from open_agent.logging_config import get_logger, setup_logging  # noqa: E402
+from open_agent.memory.session_manager import SessionManager  # noqa: E402
+from open_agent.observability.tracer import LocalJsonlTracer, NoOpTracer, Tracer  # noqa: E402
 
 # FastAPI is an optional dependency; provide a clear error if missing.
 try:

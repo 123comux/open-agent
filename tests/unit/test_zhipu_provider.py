@@ -1,8 +1,6 @@
 """Unit tests for the Zhipu AI provider and config integration."""
 from __future__ import annotations
 
-import os
-
 from open_agent.config import Settings
 from open_agent.models.zhipu_provider import (
     ZHIPU_DEFAULT_BASE_URL,

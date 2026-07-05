@@ -18,14 +18,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from open_agent.config import Settings, get_settings
-from open_agent.observability.tracer import NoOpTracer, Tracer
+# Load .env from CWD before any settings are read so that `open-agent` CLI
+# commands pick up local configuration without manual environment variable setup.
+load_dotenv()
+
+from open_agent.config import Settings, get_settings  # noqa: E402
+from open_agent.observability.tracer import NoOpTracer, Tracer  # noqa: E402
 
 if TYPE_CHECKING:
     from open_agent.models.base import ModelInterface
