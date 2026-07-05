@@ -4,6 +4,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
 from open_agent.models.anthropic_provider import AnthropicModel
 from open_agent.models.base import Message, ToolSchema
 from open_agent.models.ollama_provider import OllamaModel
@@ -368,3 +371,89 @@ async def test_ollama_no_headers_passes_none():
         await model.chat([Message(role="user", content="hi")])
     _, kwargs = mock_req.call_args
     assert kwargs["headers"] is None
+
+
+# ---------------------------------------------------------------------------
+# Stream retry behaviour (H11: do not retry after yielding chunks)
+# ---------------------------------------------------------------------------
+
+
+class _YieldThenFailStream:
+    """A stream that yields one line then raises ``TransportError``."""
+
+    def __init__(self) -> None:
+        self.raise_for_status = MagicMock()
+
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        yield 'data: {"choices": [{"delta": {"content": "chunk1"}}]}'
+        raise httpx.TransportError("connection lost mid-stream")
+
+
+class _FailImmediatelyStream:
+    """A stream that raises ``TransportError`` before yielding anything."""
+
+    def __init__(self) -> None:
+        self.raise_for_status = MagicMock()
+
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        raise httpx.TransportError("connection refused")
+        yield  # pragma: no cover - makes this a generator function
+
+
+class _SingleCm:
+    """Async context manager wrapping a single fake stream response."""
+
+    def __init__(self, response: object) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> object:
+        return self._response
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+async def test_openai_stream_retry_only_when_no_yield():
+    """If chunks were already yielded, a TransportError is not retried."""
+    model = OpenAIModel(api_key="sk-test")
+    client = MagicMock()
+    client.stream = MagicMock(return_value=_SingleCm(_YieldThenFailStream()))
+    model._client = client
+
+    chunks: list[str] = []
+    with pytest.raises(httpx.TransportError):
+        async for chunk in model.stream_chat([Message(role="user", content="hi")]):
+            chunks.append(chunk)
+
+    # The one chunk that was yielded before the error is still received.
+    assert chunks == ["chunk1"]
+    # No retry: stream was called exactly once.
+    assert client.stream.call_count == 1
+
+
+async def test_openai_stream_retry_when_no_yield():
+    """If no chunks were yielded, a TransportError triggers one retry."""
+    model = OpenAIModel(api_key="sk-test")
+    success_response = _FakeStreamResponse(
+        [
+            'data: {"choices": [{"delta": {"content": "ok"}}]}',
+            "data: [DONE]",
+        ]
+    )
+    client = MagicMock()
+    client.stream = MagicMock(
+        side_effect=[
+            _SingleCm(_FailImmediatelyStream()),
+            _SingleCm(success_response),
+        ]
+    )
+    model._client = client
+
+    chunks = [
+        chunk
+        async for chunk in model.stream_chat([Message(role="user", content="hi")])
+    ]
+
+    assert chunks == ["ok"]
+    # Retried exactly once after the initial failure.
+    assert client.stream.call_count == 2

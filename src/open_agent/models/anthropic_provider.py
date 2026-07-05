@@ -154,6 +154,7 @@ class AnthropicModel(ModelInterface):
         # (``httpx.TransportError``) raised while opening the stream; HTTP
         # errors that occur mid-stream are surfaced immediately because the
         # response has already started.
+        yielded_any = False
         for attempt in range(2):
             try:
                 async with self._async_client.stream(
@@ -174,7 +175,8 @@ class AnthropicModel(ModelInterface):
                                 text = delta.get("text")
                                 if text:
                                     yield text
+                                    yielded_any = True
                 return
             except httpx.TransportError:
-                if attempt >= 1:
+                if attempt >= 1 or yielded_any:
                     raise

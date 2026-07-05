@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any
 
@@ -17,6 +18,8 @@ from open_agent.rag.hybrid_retriever import HybridRetriever
 from open_agent.rag.indexer import Indexer
 from open_agent.rag.reranker import build_reranker
 from open_agent.rag.stores.faiss_store import FAISSStore
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeBase:
@@ -228,15 +231,26 @@ class KnowledgeBaseRouter:
     async def _retrieve_from(
         self, query: str, routed: list[str], top_k: int
     ) -> list[dict[str, Any]]:
-        """Retrieve from ``routed`` KBs in parallel, merge and re-rank."""
+        """Retrieve from ``routed`` KBs in parallel, merge and re-rank.
+
+        Each KB's retrieve runs independently: if one raises, the others'
+        results are still returned (the failure is logged and skipped) so a
+        single failing KB does not sink the whole query.
+        """
         if not routed:
             return []
         per_kb = min(self.top_k_per_kb, max(top_k, 1))
         batches = await asyncio.gather(
-            *(self._kbs[name].retrieve(query, top_k=per_kb) for name in routed)
+            *(self._kbs[name].retrieve(query, top_k=per_kb) for name in routed),
+            return_exceptions=True,
         )
         merged: list[dict[str, Any]] = []
         for name, results in zip(routed, batches):
+            if isinstance(results, BaseException):
+                logger.warning(
+                    "retrieve from KB %r failed: %r", name, results
+                )
+                continue
             for r in results:
                 meta = dict(r.get("metadata", {}))
                 meta["kb_name"] = name

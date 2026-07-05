@@ -101,7 +101,7 @@ class LongTermMemory:
         results = await self._store.query(query_text=query, n_results=k or self._top_k)
         entries: list[MemoryEntry] = []
         for result in results:
-            meta = dict(result.get("metadata", {}))
+            meta = dict(result.get("metadata") or {})
             entry_id = str(result.get("id", meta.pop("id", str(uuid.uuid4()))))
             timestamp = float(meta.pop("timestamp", 0.0))
             entries.append(

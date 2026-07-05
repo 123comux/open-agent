@@ -51,6 +51,7 @@ class WebSearchTool(Tool):
     TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
     RATE_LIMIT_SECONDS = 1.0
     _last_request_time: float = 0.0
+    _rate_lock: asyncio.Lock | None = None
 
     @staticmethod
     def _strip_tags(text: str) -> str:
@@ -74,11 +75,20 @@ class WebSearchTool(Tool):
     async def _rate_limit(self) -> None:
         if self.RATE_LIMIT_SECONDS <= 0:
             return
-        now = time.monotonic()
-        elapsed = now - WebSearchTool._last_request_time
-        if 0.0 <= elapsed < self.RATE_LIMIT_SECONDS:
-            await asyncio.sleep(self.RATE_LIMIT_SECONDS - elapsed)
-        WebSearchTool._last_request_time = time.monotonic()
+        # Lazily create the lock on first use. asyncio.Lock must be created
+        # inside a running event loop; doing it here (rather than at class
+        # definition time) avoids "no running event loop" errors and makes
+        # the lock safe across loop restarts. The check-then-assign is atomic
+        # in asyncio's single-threaded model (no await between them).
+        if WebSearchTool._rate_lock is None:
+            WebSearchTool._rate_lock = asyncio.Lock()
+        async with WebSearchTool._rate_lock:
+            now = time.monotonic()
+            elapsed = now - WebSearchTool._last_request_time
+            if 0.0 <= elapsed < self.RATE_LIMIT_SECONDS:
+                wait = self.RATE_LIMIT_SECONDS - elapsed
+                await asyncio.sleep(wait)
+            WebSearchTool._last_request_time = time.monotonic()
 
     # ------------------------------------------------------------------
     # Bing parsing (primary — works in China)
@@ -147,52 +157,72 @@ class WebSearchTool(Tool):
     # DuckDuckGo parsing (fallback)
     # ------------------------------------------------------------------
     def _parse_lite(self, html: str, max_results: int) -> list[dict[str, str]]:
-        snippets = [
-            self._strip_tags(inner)
-            for _, inner in re.findall(
-                r'<(?P<tag>td|a|div)\b[^>]*\bclass="result-snippet"[^>]*>(.*?)</(?P=tag)>',
-                html,
-                re.DOTALL,
-            )
+        """Parse DuckDuckGo Lite results, pairing each link with its snippet.
+
+        Snippets are extracted from the region between a result link and the
+        next result link (rather than globally collecting all snippets and
+        zipping by index) so a missing or extra snippet cannot shift the
+        pairing — mirroring the block-scoped approach used by ``_parse_bing``.
+        """
+        link_pattern = re.compile(r'<a\b([^>]*)>(.*?)</a>', re.DOTALL)
+        snippet_pattern = re.compile(
+            r'<(?P<tag>td|a|div)\b[^>]*\bclass="result-snippet"[^>]*>(.*?)</(?P=tag)>',
+            re.DOTALL,
+        )
+        links = [
+            (m.start(), m)
+            for m in link_pattern.finditer(html)
+            if "result-link" in m.group(1)
         ]
         results: list[dict[str, str]] = []
-        for attrs, title in re.findall(r'<a\b([^>]*)>(.*?)</a>', html, re.DOTALL):
-            if "result-link" not in attrs:
-                continue
+        for i, (start, m) in enumerate(links):
+            attrs, title_html = m.group(1), m.group(2)
             href_match = re.search(r'href=["\']([^"\']+)["\']', attrs)
             url = self._clean_url(href_match.group(1)) if href_match else ""
-            results.append({"title": self._strip_tags(title), "url": url, "snippet": ""})
+            end = links[i + 1][0] if i + 1 < len(links) else len(html)
+            snippet = ""
+            snip_match = snippet_pattern.search(html, start, end)
+            if snip_match:
+                snippet = self._strip_tags(snip_match.group(2))
+            results.append(
+                {"title": self._strip_tags(title_html), "url": url, "snippet": snippet}
+            )
             if len(results) >= max_results:
                 break
-        self._pair_snippets(results, snippets)
         return results
 
     def _parse_html(self, html: str, max_results: int) -> list[dict[str, str]]:
-        snippets = [
-            self._strip_tags(inner)
-            for _, inner in re.findall(
-                r'<(?P<tag>a|td|div)\b[^>]*\bclass="result__snippet"[^>]*>(.*?)</(?P=tag)>',
-                html,
-                re.DOTALL,
-            )
+        """Parse DuckDuckGo HTML results, pairing each link with its snippet.
+
+        Snippets are extracted from the region between a result link and the
+        next result link so a missing/extra snippet cannot desync the pairing.
+        """
+        link_pattern = re.compile(r'<a\b([^>]*)>(.*?)</a>', re.DOTALL)
+        snippet_pattern = re.compile(
+            r'<(?P<tag>a|td|div)\b[^>]*\bclass="result__snippet"[^>]*>(.*?)</(?P=tag)>',
+            re.DOTALL,
+        )
+        links = [
+            (m.start(), m)
+            for m in link_pattern.finditer(html)
+            if "result__a" in m.group(1)
         ]
         results: list[dict[str, str]] = []
-        for attrs, title in re.findall(r'<a\b([^>]*)>(.*?)</a>', html, re.DOTALL):
-            if "result__a" not in attrs:
-                continue
+        for i, (start, m) in enumerate(links):
+            attrs, title_html = m.group(1), m.group(2)
             href_match = re.search(r'href=["\']([^"\']+)["\']', attrs)
             url = self._clean_url(href_match.group(1)) if href_match else ""
-            results.append({"title": self._strip_tags(title), "url": url, "snippet": ""})
+            end = links[i + 1][0] if i + 1 < len(links) else len(html)
+            snippet = ""
+            snip_match = snippet_pattern.search(html, start, end)
+            if snip_match:
+                snippet = self._strip_tags(snip_match.group(2))
+            results.append(
+                {"title": self._strip_tags(title_html), "url": url, "snippet": snippet}
+            )
             if len(results) >= max_results:
                 break
-        self._pair_snippets(results, snippets)
         return results
-
-    @staticmethod
-    def _pair_snippets(results: list[dict[str, str]], snippets: list[str]) -> None:
-        for i, result in enumerate(results):
-            if i < len(snippets):
-                result["snippet"] = snippets[i]
 
     def _format(self, results: list[dict[str, str]]) -> str:
         if not results:

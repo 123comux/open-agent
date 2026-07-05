@@ -7,12 +7,15 @@ persists traces to a local JSONL file so they can be inspected later.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -190,10 +193,19 @@ class LocalJsonlTracer(NoOpTracer):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._file = self.output_dir / "traces.jsonl"
-        # Keep the file handle open so end_trace persists each trace with a
-        # single buffered write+flush instead of reopening the file on every
-        # call (which blocks the event loop from async agent code).
-        self._file_handle = self._file.open("a", encoding="utf-8")
+        # Open in line-buffered mode (``buffering=1``) so each completed line
+        # is pushed to the OS as soon as it is written.
+        #
+        # Known limitation: ``end_trace`` is intentionally synchronous to
+        # honour the shared :class:`Tracer` interface (callers in
+        # ``Agent.run``/``run_stream`` invoke it directly from async code), so
+        # the write still blocks the event loop briefly. Fully non-blocking
+        # persistence would require either making ``end_trace`` a coroutine
+        # (breaking the sync contract used by ``NoOpTracer``) or wrapping the
+        # call site in ``asyncio.to_thread`` in the agent layer (out of scope
+        # for this module). Line buffering keeps each write cheap and bounds
+        # the blocking window to a single line.
+        self._file_handle = self._file.open("a", encoding="utf-8", buffering=1)
 
     def end_trace(
         self,
@@ -322,8 +334,8 @@ class LangfuseTracer(NoOpTracer):
                 metadata=metadata or {},
             )
             self._observations[trace.id] = obs
-        except Exception:  # pragma: no cover - optional backend
-            pass
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("observability backend call failed: %s", exc, exc_info=True)
         return trace
 
     def start_span(
@@ -353,8 +365,8 @@ class LangfuseTracer(NoOpTracer):
                 else:
                     obs = self._start_observation(name, type_, input_data, metadata)
             self._observations[span.id] = obs
-        except Exception:  # pragma: no cover - optional backend
-            pass
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("observability backend call failed: %s", exc, exc_info=True)
         return span
 
     def end_span(
@@ -375,8 +387,11 @@ class LangfuseTracer(NoOpTracer):
                     level=level,
                     status_message=None if status == "ok" else str(output_data),
                 )
-        except Exception:  # pragma: no cover - optional backend
-            pass
+            # Drop the observation so the dict does not grow unbounded across
+            # many traces/spans; safe to pop even when no obs was recorded.
+            self._observations.pop(span.id, None)
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("langfuse end_span failed: %s", exc, exc_info=True)
 
     def end_trace(
         self,
@@ -395,8 +410,11 @@ class LangfuseTracer(NoOpTracer):
                     level=level,
                     status_message=None if status == "ok" else str(output_data),
                 )
-        except Exception:  # pragma: no cover - optional backend
-            pass
+            # Drop the observation so the dict does not grow unbounded across
+            # many traces/spans; safe to pop even when no obs was recorded.
+            self._observations.pop(trace.id, None)
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("langfuse end_trace failed: %s", exc, exc_info=True)
 
 
 class LangSmithTracer(NoOpTracer):
@@ -457,8 +475,8 @@ class LangSmithTracer(NoOpTracer):
                 extra={"metadata": metadata or {}},
                 project_name=self.project_name,
             )
-        except Exception:  # pragma: no cover - optional backend
-            pass
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("observability backend call failed: %s", exc, exc_info=True)
         return trace
 
     def start_span(
@@ -483,8 +501,8 @@ class LangSmithTracer(NoOpTracer):
                 extra={"metadata": metadata or {}, "span_type": type_},
                 project_name=self.project_name,
             )
-        except Exception:  # pragma: no cover - optional backend
-            pass
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("observability backend call failed: %s", exc, exc_info=True)
         return span
 
     def end_span(
@@ -506,8 +524,8 @@ class LangSmithTracer(NoOpTracer):
                 error=error,
                 extras={"metrics": metrics or {}, "status": status},
             )
-        except Exception:  # pragma: no cover - optional backend
-            pass
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("observability backend call failed: %s", exc, exc_info=True)
 
     def end_trace(
         self,
@@ -527,5 +545,5 @@ class LangSmithTracer(NoOpTracer):
                 error=error,
                 extras={"status": status},
             )
-        except Exception:  # pragma: no cover - optional backend
-            pass
+        except Exception as exc:  # pragma: no cover - optional backend
+            logger.debug("observability backend call failed: %s", exc, exc_info=True)

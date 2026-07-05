@@ -71,6 +71,18 @@ def estimate_tokens(text: str, model: str = "") -> int:
     return max(1, len(text) // 3)
 
 
+def _estimate_single_message_tokens(msg: dict[str, Any], model: str) -> int:
+    """Estimate the token cost of a single message.
+
+    Each message contributes ``estimate_tokens(content) + 4`` (the 4 accounts
+    for role/formatting overhead). Non-string content is coerced to ``str``.
+    """
+    content = msg.get("content", "")
+    if not isinstance(content, str):
+        content = str(content)
+    return estimate_tokens(content, model) + 4
+
+
 def estimate_messages_tokens(messages: list[dict[str, Any]], model: str = "") -> int:
     """Estimate total tokens for a list of messages.
 
@@ -79,10 +91,7 @@ def estimate_messages_tokens(messages: list[dict[str, Any]], model: str = "") ->
     """
     total = 0
     for msg in messages:
-        content = msg.get("content", "")
-        if not isinstance(content, str):
-            content = str(content)
-        total += estimate_tokens(content, model) + 4
+        total += _estimate_single_message_tokens(msg, model)
     return total
 
 
@@ -134,6 +143,8 @@ def truncate_messages(
     3. Drop middle messages from the oldest until under the limit.
     4. If still over, truncate each recent message content via binary search
        (keeping the tail), dropping it entirely if it still does not fit.
+    5. If only the system message remains and it is still over the limit,
+       truncate its content (keeping the head) so the result fits.
 
     Returns a *new* list of message dicts (copies); the input list is not
     mutated. Returns an empty list when ``messages`` is empty.
@@ -157,28 +168,65 @@ def truncate_messages(
         middle = [dict(m) for m in rest[:split]]
         recent = [dict(m) for m in rest[split:]]
     sys_list: list[dict[str, Any]] = [system_msg] if system_msg is not None else []
-    while (
-        middle
-        and estimate_messages_tokens(sys_list + middle + recent, model) > max_tokens
-    ):
-        middle.pop(0)
-    if estimate_messages_tokens(sys_list + middle + recent, model) <= max_tokens:
+
+    # Cache per-message token counts so the truncation loops don't re-encode
+    # the same message on every iteration (would otherwise be O(n^2)).
+    token_cache: dict[int, int] = {}
+
+    def _msg_tokens(msg: dict[str, Any]) -> int:
+        key = id(msg)
+        if key not in token_cache:
+            token_cache[key] = _estimate_single_message_tokens(msg, model)
+        return token_cache[key]
+
+    total = sum(_msg_tokens(m) for m in sys_list)
+    total += sum(_msg_tokens(m) for m in middle)
+    total += sum(_msg_tokens(m) for m in recent)
+
+    while middle and total > max_tokens:
+        total -= _msg_tokens(middle.pop(0))
+    if total <= max_tokens:
         return sys_list + middle + recent
-    while (
-        recent
-        and estimate_messages_tokens(sys_list + middle + recent, model) > max_tokens
-    ):
+    while recent and total > max_tokens:
         msg = recent[0]
         content = str(msg.get("content", ""))
         role = str(msg.get("role", "user"))
         context = sys_list + middle + recent[1:]
         new_content = _fit_tail(content, context, role, max_tokens, model)
         if new_content or not content:
+            old = token_cache.pop(id(msg), 0)
             msg["content"] = new_content
-            if (
-                estimate_messages_tokens(sys_list + middle + recent, model)
-                <= max_tokens
-            ):
+            total += _msg_tokens(msg) - old
+            if total <= max_tokens:
                 break
-        recent.pop(0)
+        total -= _msg_tokens(recent.pop(0))
+
+    # Final fallback: if only the system message remains and it is still over
+    # the limit, truncate the system content (keeping the head) so the result
+    # fits within max_tokens. This handles oversized system prompts that
+    # contain e.g. large tool descriptions.
+    if (
+        system_msg is not None
+        and not middle
+        and not recent
+        and total > max_tokens
+    ):
+        content = system_msg.get("content", "")
+        if isinstance(content, str) and content:
+            marker = "\n...(truncated)"
+            budget = max(0, max_tokens - 4)  # reserve role overhead
+            lo, hi, best = 0, len(content), ""
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                candidate = (
+                    content[:mid] + marker if mid < len(content) else content
+                )
+                if estimate_tokens(candidate, model) <= budget:
+                    best = candidate
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            system_msg["content"] = best
+            token_cache.pop(id(system_msg), None)
+
     return sys_list + middle + recent

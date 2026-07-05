@@ -97,22 +97,43 @@ class SessionManager:
         return sorted(sessions)
 
     def rename_session(self, old_id: str, new_id: str) -> None:
-        """Rename a session, updating both memory and persisted file."""
+        """Rename a session, updating both memory and persisted file.
+
+        Performs all validation up front so that, on failure, neither the
+        in-memory dict nor the on-disk file is mutated. Crucially, when a
+        session exists only on disk (not in ``_sessions``), the renamed file
+        is left as-is rather than being overwritten by an empty
+        :class:`ShortTermMemory` via :meth:`_save`.
+        """
         self._validate_session_id(old_id)
         self._validate_session_id(new_id)
         if old_id == new_id:
             return
         if new_id in self._sessions:
             raise ValueError(f"Session '{new_id}' already exists")
-        mem = self._sessions.pop(old_id, ShortTermMemory(self.max_messages))
-        self._sessions[new_id] = mem
-        if self.storage_dir:
-            old_path = self._session_path(old_id)
-            new_path = self._session_path(new_id)
-            if new_path.exists():
-                raise ValueError(f"Session '{new_id}' already exists")
-            if old_path.exists():
-                old_path.rename(new_path)
+        old_path = self._session_path(old_id) if self.storage_dir else None
+        new_path = self._session_path(new_id) if self.storage_dir else None
+        # Pre-check the target on disk before mutating any state so a failure
+        # leaves both memory and filesystem untouched.
+        if new_path is not None and new_path.exists():
+            raise ValueError(f"Session '{new_id}' already exists")
+        has_mem = old_id in self._sessions
+        has_disk = old_path is not None and old_path.exists()
+        if not has_mem and not has_disk:
+            raise KeyError(f"Session '{old_id}' not found")
+        # Mutate in-memory state. Use ``None`` as the pop default so we don't
+        # create a throwaway ShortTermMemory when the session is disk-only.
+        mem = self._sessions.pop(old_id, None)
+        if mem is not None:
+            self._sessions[new_id] = mem
+        # Move the on-disk file if present. The file is already in place, so
+        # we must NOT call ``_save`` afterwards: that would clobber the real
+        # history with whatever ``_sessions`` holds (possibly nothing).
+        if has_disk and old_path is not None and new_path is not None:
+            old_path.rename(new_path)
+        # Only when we had memory but no disk file do we need to materialize
+        # the new disk file via ``_save``.
+        if mem is not None and not has_disk and self.storage_dir:
             self._save(new_id)
 
     def search_sessions(self, query: str) -> list[dict[str, Any]]:

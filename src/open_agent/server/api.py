@@ -116,6 +116,8 @@ async def _build_agent() -> tuple[Any, Any, Tracer]:
                 await mcp_client.connect()
                 for mcp_tool in adapt_mcp_tools(mcp_client):
                     registry.register(mcp_tool)
+                global _mcp_client
+                _mcp_client = mcp_client
         except Exception as exc:  # pragma: no cover - optional integration
             logger.warning("Failed to load MCP servers: %s", exc)
 
@@ -194,18 +196,18 @@ class SettingsUpdateRequest(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model_name: str | None = None
-    max_steps: int | None = None
-    request_timeout: float | None = None
+    max_steps: int | None = Field(default=None, ge=1, le=200)
+    request_timeout: float | None = Field(default=None, ge=1.0, le=3600.0)
     embedding_model: str | None = None
-    chunk_size: int | None = None
-    chunk_overlap: int | None = None
+    chunk_size: int | None = Field(default=None, ge=1, le=100000)
+    chunk_overlap: int | None = Field(default=None, ge=0, le=100000)
     split_unit: str | None = None
-    rag_top_k: int | None = None
+    rag_top_k: int | None = Field(default=None, ge=1, le=100)
     reranker_model: str | None = None
-    rerank_k: int | None = None
+    rerank_k: int | None = Field(default=None, ge=1, le=200)
     enabled_tools: list[str] | None = None
     enable_long_term_memory: bool | None = None
-    long_term_memory_top_k: int | None = None
+    long_term_memory_top_k: int | None = Field(default=None, ge=1, le=50)
 
 
 _settings = get_settings()
@@ -236,6 +238,21 @@ def _validate_session_id(session_id: str) -> str:
     return session_id
 
 
+def _validate_kb_name(kb_name: str) -> str:
+    """Validate kb_name to prevent path traversal (same rules as session_id)."""
+    if not kb_name or not _SESSION_ID_PATTERN.match(kb_name):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid kb_name: only alphanumeric, dash, dot, underscore allowed.",
+        )
+    if ".." in kb_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid kb_name: '..' is not allowed.",
+        )
+    return kb_name
+
+
 async def _require_auth(request: Request) -> None:
     """Validate Bearer token when OPEN_AGENT_API_AUTH_TOKEN is configured.
 
@@ -253,6 +270,8 @@ async def _require_auth(request: Request) -> None:
 
 
 _kb_manager: Any = None
+_mcp_client: Any = None
+_rebuild_lock = asyncio.Lock()
 
 
 def _get_kb_manager() -> Any:
@@ -275,14 +294,40 @@ def _get_kb_manager() -> Any:
     return _kb_manager
 
 
+async def _close_mcp_client() -> None:
+    """Close the module-level MCP client if one is active."""
+    global _mcp_client
+    if _mcp_client is not None:
+        try:
+            await _mcp_client.close()
+        except Exception:
+            logger.debug("MCP client close failed", exc_info=True)
+        _mcp_client = None
+
+
+async def _close_model() -> None:
+    """Close the current agent's model httpx client if it exposes ``aclose``."""
+    if _agent is not None:
+        model = getattr(_agent, "model", None)
+        if model is not None:
+            aclose = getattr(model, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception:
+                    logger.debug("model aclose failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Build the agent on startup; clean up on shutdown."""
     await _initialize_agent()
     yield
-    from open_agent.tools.builtin.web_search import aclose as _close_web_search
-
+    await _close_mcp_client()
+    await _close_model()
     try:
+        from open_agent.tools.builtin.web_search import aclose as _close_web_search
+
         await _close_web_search()
     except Exception:
         pass
@@ -378,7 +423,7 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/api/ready", tags=["health"])
+@app.get("/api/ready", tags=["health"], response_model=None)
 async def readiness_check() -> dict[str, object] | JSONResponse:
     """Readiness check — verifies the agent is initialized."""
     if _agent is None:
@@ -576,6 +621,7 @@ async def upload_document(
 
     Supports: .txt, .md, .rst, .pdf, .docx, .csv, .json, .html
     """
+    _validate_kb_name(kb_name)
     import os
     import tempfile
 
@@ -626,10 +672,10 @@ async def upload_document(
             "chunks": chunk_count,
         }
     except Exception as exc:
-        logger.error(f"Upload indexing failed: {exc}", exc_info=True)
+        logger.error("Upload indexing failed: %s", exc, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"error": "indexing_failed", "message": str(exc)},
+            content={"error": "indexing_failed", "message": "indexing failed"},
         )
     finally:
         try:
@@ -669,7 +715,7 @@ async def list_kb_documents(kb_name: str) -> dict[str, Any] | JSONResponse:
         logger.error("Failed to list KB documents: %s", exc, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"error": "list_failed", "message": str(exc)},
+            content={"error": "list_failed", "message": "failed to list documents"},
         )
 
 
@@ -695,7 +741,7 @@ async def delete_kb_document(kb_name: str, source: str) -> dict[str, Any] | JSON
         logger.error("Failed to delete KB document: %s", exc, exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"error": "delete_failed", "message": str(exc)},
+            content={"error": "delete_failed", "message": "failed to delete document"},
         )
 
 
@@ -735,23 +781,7 @@ async def get_trace(trace_id: str) -> Any:
 @app.get("/api/settings", tags=["settings"], dependencies=[Depends(_require_auth)])
 async def get_settings_endpoint() -> dict[str, Any]:
     """Return the current runtime settings (excluding secrets)."""
-    return {
-        "model_provider": _settings.model_provider,
-        "base_url": _settings.base_url,
-        "model_name": _settings.model_name,
-        "max_steps": _settings.max_steps,
-        "request_timeout": _settings.request_timeout,
-        "embedding_model": _settings.embedding_model,
-        "chunk_size": _settings.chunk_size,
-        "chunk_overlap": _settings.chunk_overlap,
-        "split_unit": _settings.split_unit,
-        "rag_top_k": _settings.rag_top_k,
-        "reranker_model": _settings.reranker_model,
-        "rerank_k": _settings.rerank_k,
-        "enabled_tools": _settings.enabled_tools,
-        "enable_long_term_memory": _settings.enable_long_term_memory,
-        "long_term_memory_top_k": _settings.long_term_memory_top_k,
-    }
+    return _settings.to_safe_dict()
 
 
 @app.post(
@@ -764,49 +794,53 @@ async def update_settings_endpoint(request: SettingsUpdateRequest) -> dict[str, 
     """Apply new runtime settings and rebuild the agent/registry."""
     global _settings, _agent, _registry, _tracer, _kb_manager, _session_manager
 
-    updates = request.model_dump(exclude_unset=True)
-    old_settings = _settings.model_copy(deep=True)
-    old_kb_manager = _kb_manager
-    old_session_manager = _session_manager
-    new_settings = _settings.model_copy(update=updates)
-    # Re-validate to run model_validator (model_copy bypasses it).
-    new_settings = Settings.model_validate(new_settings.model_dump())
-    from open_agent.config import set_settings
+    async with _rebuild_lock:
+        updates = request.model_dump(exclude_unset=True)
+        old_settings = _settings.model_copy(deep=True)
+        old_kb_manager = _kb_manager
+        old_session_manager = _session_manager
+        new_settings = _settings.model_copy(update=updates)
+        # Re-validate to run model_validator (model_copy bypasses it).
+        new_settings = Settings.model_validate(new_settings.model_dump())
+        from open_agent.config import set_settings
 
-    set_settings(new_settings)
-    _settings = new_settings
+        set_settings(new_settings)
+        _settings = new_settings
 
-    kb_fields = {
-        "chunk_size",
-        "chunk_overlap",
-        "split_unit",
-        "embedding_model",
-        "rag_top_k",
-        "reranker_model",
-        "rerank_k",
-    }
-    if updates.keys() & kb_fields:
-        _kb_manager = None
+        kb_fields = {
+            "chunk_size",
+            "chunk_overlap",
+            "split_unit",
+            "embedding_model",
+            "rag_top_k",
+            "reranker_model",
+            "rerank_k",
+        }
+        if updates.keys() & kb_fields:
+            _kb_manager = None
 
-    session_fields = {"short_term_memory_size", "session_storage_dir"}
-    if updates.keys() & session_fields:
-        _session_manager = SessionManager(
-            max_messages=_settings.short_term_memory_size,
-            storage_dir=_settings.session_storage_dir,
-        )
+        session_fields = {"short_term_memory_size", "session_storage_dir"}
+        if updates.keys() & session_fields:
+            _session_manager = SessionManager(
+                max_messages=_settings.short_term_memory_size,
+                storage_dir=_settings.session_storage_dir,
+            )
 
-    try:
-        _agent, _registry, _tracer = await _build_agent()
-    except Exception as exc:
-        logger.error("Failed to rebuild agent after settings update: %s", exc, exc_info=True)
-        set_settings(old_settings)
-        _settings = old_settings
-        _kb_manager = old_kb_manager
-        _session_manager = old_session_manager
-        return JSONResponse(
-            status_code=500,
-            content={"error": "rebuild_failed", "message": str(exc)},
-        )
+        try:
+            # Close resources held by the old agent before rebuilding.
+            await _close_mcp_client()
+            await _close_model()
+            _agent, _registry, _tracer = await _build_agent()
+        except Exception as exc:
+            logger.error("Failed to rebuild agent after settings update: %s", exc, exc_info=True)
+            set_settings(old_settings)
+            _settings = old_settings
+            _kb_manager = old_kb_manager
+            _session_manager = old_session_manager
+            return JSONResponse(
+                status_code=500,
+                content={"error": "rebuild_failed", "message": "settings update failed"},
+            )
 
     logger.info("Runtime settings updated: %s", ", ".join(updates.keys()))
     return {"status": "updated"}

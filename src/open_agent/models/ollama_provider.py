@@ -143,6 +143,7 @@ class OllamaModel(ModelInterface):
         # (``httpx.TransportError``) raised while opening the stream; HTTP
         # errors that occur mid-stream are surfaced immediately because the
         # response has already started.
+        yielded_any = False
         for attempt in range(2):
             try:
                 async with self._async_client.stream(
@@ -160,9 +161,10 @@ class OllamaModel(ModelInterface):
                         content = message.get("content")
                         if content:
                             yield content
+                            yielded_any = True
                         if data.get("done"):
                             break
                 return
             except httpx.TransportError:
-                if attempt >= 1:
+                if attempt >= 1 or yielded_any:
                     raise

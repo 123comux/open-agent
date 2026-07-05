@@ -63,24 +63,45 @@ class MCPToolRegistry:
         ``config`` is forwarded to the :class:`MCPClient` constructor and must
         contain either ``command`` (stdio) or ``url`` (SSE), optionally with
         ``args``.
+
+        If the server connects but tool discovery fails partway, the client is
+        disconnected before re-raising so no connection is leaked.
         """
         client = MCPClient(**config)
-        await client.connect()
-        self._clients[name] = client
-        for tool in await client.list_tools():
-            adapter = MCPToolAdapter(
-                client=client,
-                tool_name=tool.get("name", ""),
-                tool_description=tool.get("description", ""),
-                tool_schema=tool.get("inputSchema", {}),
-                server_name=name,
-            )
-            self._tools.append(adapter)
+        try:
+            await client.connect()
+            self._clients[name] = client
+            for tool in await client.list_tools():
+                adapter = MCPToolAdapter(
+                    client=client,
+                    tool_name=tool.get("name", ""),
+                    tool_description=tool.get("description", ""),
+                    tool_schema=tool.get("inputSchema", {}),
+                    server_name=name,
+                )
+                self._tools.append(adapter)
+        except Exception:
+            # Tear down the partially-connected client so a failed
+            # connect_server does not leak a subprocess or HTTP connection.
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            # Remove the client if it was registered before the failure.
+            self._clients.pop(name, None)
+            raise
 
     async def disconnect_all(self) -> None:
-        """Disconnect every connected MCP server and clear the tool list."""
-        for client in self._clients.values():
-            await client.disconnect()
+        """Disconnect every connected MCP server and clear the tool list.
+
+        Each client is disconnected in its own try/except so one failing
+        disconnect cannot skip the remaining ones.
+        """
+        for client in list(self._clients.values()):
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
         self._clients.clear()
         self._tools.clear()
 

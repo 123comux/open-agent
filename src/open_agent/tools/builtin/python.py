@@ -26,7 +26,9 @@ def _safe_builtins() -> dict[str, Any]:
     Dangerous builtins such as ``__import__``, ``open``, ``eval``, ``exec``,
     ``compile``, ``globals``, ``locals`` and ``vars`` are deliberately excluded
     so sandboxed code cannot escape the namespace to reach the filesystem, the
-    import system, or arbitrary code execution.
+    import system, or arbitrary code execution. The attribute-access builtins
+    ``getattr``, ``setattr`` and ``delattr`` and ``super`` are also excluded to
+    hinder reflection-based sandbox escapes (e.g. reaching ``__subclasses__``).
     """
     safe_names = {
         # Constants
@@ -43,9 +45,9 @@ def _safe_builtins() -> dict[str, Any]:
         # Comparison
         "max", "min",
         # Object
-        "callable", "classmethod", "delattr", "getattr", "hasattr", "hash",
+        "callable", "classmethod", "hasattr", "hash",
         "id", "isinstance", "issubclass", "object", "property", "repr",
-        "setattr", "slice", "staticmethod", "super",
+        "slice", "staticmethod",
         # String
         "ascii", "chr", "format",
         # Sorting
@@ -127,7 +129,14 @@ class PythonTool(Tool):
                         # Split: exec everything before, eval the last line
                         prefix = "\n".join(lines[:-1])
                         if prefix.strip():
-                            exec(prefix, globals_ns, locals_ns)  # noqa: S102
+                            try:
+                                exec(prefix, globals_ns, locals_ns)  # noqa: S102
+                            except SyntaxError:
+                                # prefix is incomplete (e.g. a continuation
+                                # line like ``result = (1 +``); fall back to
+                                # exec'ing the whole code block.
+                                exec(code, globals_ns, locals_ns)  # noqa: S102
+                                return buffer.getvalue()
                         try:
                             result = eval(last_line, globals_ns, locals_ns)  # noqa: S307
                             if result is not None:

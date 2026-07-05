@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 from open_agent.tools.base import Tool
 from open_agent.tools.sandbox import check_path
@@ -54,8 +55,10 @@ class FileTool(Tool):
         if action == "read":
             return await asyncio.to_thread(self._read, path)
         if action == "write":
-            content = str(kwargs.get("content", ""))
-            return await asyncio.to_thread(self._write, path, content)
+            content = kwargs.get("content")
+            if content is None:
+                return "Error: 'content' is required for write action."
+            return await asyncio.to_thread(self._write, path, str(content))
         if action == "list":
             return await asyncio.to_thread(self._list, path)
         return f"Error: unknown action '{action}'."
@@ -73,8 +76,14 @@ class FileTool(Tool):
     @staticmethod
     def _write(path: str, content: str) -> str:
         try:
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(content)
+            # Atomic write: write to a temp file in the same directory then
+            # os.replace onto the target. A crash mid-write leaves the temp
+            # file (not the target) partially written, so the target is never
+            # truncated. os.replace is atomic on both POSIX and Windows.
+            target = Path(path)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, target)
             return f"Wrote {len(content)} characters to {path}."
         except OSError as exc:
             return f"Error writing file: {exc}"

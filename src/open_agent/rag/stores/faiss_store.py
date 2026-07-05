@@ -119,26 +119,43 @@ class FAISSStore:
         ``metadata``. ``score`` is the cosine similarity (higher is more
         similar) because vectors are L2-normalized and the index uses inner
         product.
+
+        The query vector is computed outside the lock so concurrent
+        ``add``/``delete`` calls can proceed while the embedding runs; the
+        search itself and the parallel ``_ids``/``_documents``/``_metadatas``
+        reads are performed under ``self._lock`` to avoid racing with a
+        concurrent ``delete`` that rebuilds the index and the parallel lists.
         """
-        if n_results <= 0 or self._index is None or not self._ids:
+        if n_results <= 0:
             return []
-        k = min(n_results, len(self._ids))
         vector = await asyncio.to_thread(self._embed_sync, [query_text])
-        distances, indices = self._index.search(vector, k)
-        results: list[dict[str, Any]] = []
-        for rank, idx in enumerate(indices[0]):
-            if idx == -1:
-                continue
-            i = int(idx)
-            results.append(
-                {
-                    "id": self._ids[i],
-                    "document": self._documents[i],
-                    "score": float(distances[0][rank]),
-                    "metadata": self._metadatas[i],
-                }
-            )
-        return results
+        async with self._lock:
+            if self._index is None or not self._ids:
+                return []
+            k = min(n_results, len(self._ids))
+            if k <= 0:
+                return []
+            index = self._index
+            distances, indices = await asyncio.to_thread(index.search, vector, k)
+            results: list[dict[str, Any]] = []
+            ids = self._ids
+            documents = self._documents
+            metadatas = self._metadatas
+            for rank, idx in enumerate(indices[0]):
+                if idx == -1:
+                    continue
+                i = int(idx)
+                if i < 0 or i >= len(ids):
+                    continue
+                results.append(
+                    {
+                        "id": ids[i],
+                        "document": documents[i],
+                        "score": float(distances[0][rank]),
+                        "metadata": metadatas[i],
+                    }
+                )
+            return results
 
     def _save_sync(self, path: str) -> None:
         if self._index is None:

@@ -44,9 +44,22 @@ class BGEReranker(Reranker):
 
     - ``BAAI/bge-reranker-v2-m3`` (default, small, fast)
     - ``BAAI/bge-reranker-base`` (slightly stronger, larger)
+
+    The underlying ``CrossEncoder`` is loaded lazily on the first
+    :meth:`rank` call rather than in ``__init__``. Constructing a
+    ``BGEReranker`` therefore does not load the (multi-hundred-MB) model and
+    does not block the event loop; :meth:`rank` is expected to be invoked via
+    :func:`asyncio.to_thread`, so the lazy load also happens off the loop.
     """
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3") -> None:
+        self.model_name = model_name
+        self._model: Any = None
+
+    def _ensure_model(self) -> None:
+        """Lazily load the CrossEncoder on first use."""
+        if self._model is not None:
+            return
         try:
             from sentence_transformers import CrossEncoder  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover - optional dependency
@@ -54,14 +67,14 @@ class BGEReranker(Reranker):
                 "sentence-transformers is required for BGEReranker. "
                 "Install it with: pip install sentence-transformers"
             ) from exc
-        self.model_name = model_name
-        self._model = CrossEncoder(model_name, max_length=512)
+        self._model = CrossEncoder(self.model_name, max_length=512)
 
     def rank(
         self, query: str, documents: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         if not documents:
             return []
+        self._ensure_model()
         pairs = [(query, str(d.get("document", ""))) for d in documents]
         scores = self._model.predict(pairs)
         scored = [

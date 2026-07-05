@@ -49,14 +49,29 @@ class MCPClient:
         self._http_client: httpx.AsyncClient | None = None
         self._initialized = False
         self._request_timeout: float = 30.0
+        # Serializes stdio JSON-RPC requests: the stdio transport is a single
+        # bidirectional pipe, so concurrent requests would interleave and each
+        # reader could pick up the other's response.
+        self._stdio_lock = asyncio.Lock()
 
     async def connect(self) -> None:
-        """Establish the transport connection and complete the MCP handshake."""
-        if self._transport == "stdio":
-            await self._connect_stdio()
-        else:
-            await self._connect_sse()
-        await self._initialize()
+        """Establish the transport connection and complete the MCP handshake.
+
+        If setup fails partway (e.g. ``_initialize`` raises after the
+        subprocess is started), the transport is torn down via
+        :meth:`disconnect` so no resources are leaked.
+        """
+        try:
+            if self._transport == "stdio":
+                await self._connect_stdio()
+            else:
+                await self._connect_sse()
+            await self._initialize()
+        except Exception:
+            # Clean up any partially-established transport before re-raising
+            # so a failed connect does not leak a subprocess or HTTP client.
+            await self._safe_disconnect()
+            raise
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """Return the list of tools advertised by the MCP server."""
@@ -72,20 +87,46 @@ class MCPClient:
         return self._extract_text(result)
 
     async def disconnect(self) -> None:
-        """Close the transport connection."""
+        """Close the transport connection.
+
+        Each cleanup step is isolated in its own try/except so a failure in
+        one (e.g. ``terminate`` raising) cannot skip the rest. Exceptions are
+        swallowed to make ``disconnect`` safe to call from ``finally`` blocks
+        and during error recovery.
+        """
+        await self._safe_disconnect()
+
+    async def _safe_disconnect(self) -> None:
+        """Best-effort teardown that never raises."""
         if self._transport == "stdio":
             if self._process is not None:
-                self._process.terminate()
-                try:
-                    await asyncio.wait_for(self._process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    self._process.kill()
-                    await self._process.wait()
+                proc = self._process
                 self._process = None
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+                except Exception:  # noqa: BLE001
+                    pass
+                else:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    except Exception:  # noqa: BLE001
+                        pass
         else:
             if self._http_client is not None:
-                await self._http_client.aclose()
+                client = self._http_client
                 self._http_client = None
+                try:
+                    await client.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
         self._initialized = False
 
     # -- transport setup -------------------------------------------------
@@ -143,25 +184,30 @@ class MCPClient:
             await self._send_notification_sse(notification)
 
     async def _send_request_stdio(self, request: dict[str, Any]) -> dict[str, Any]:
-        assert self._process is not None
-        assert self._process.stdin is not None
-        assert self._process.stdout is not None
-        payload = json.dumps(request) + "\n"
-        self._process.stdin.write(payload.encode())
-        await self._process.stdin.drain()
-        try:
-            response_line = await asyncio.wait_for(
-                self._process.stdout.readline(),
-                timeout=self._request_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise TimeoutError(
-                f"MCP server did not respond within {self._request_timeout}s"
-            )
-        if not response_line:
-            raise RuntimeError("MCP server closed the connection (stdio).")
-        message = json.loads(response_line.decode())
-        return self._unwrap(message)
+        # The stdio transport is a single pipe shared by all requests; without
+        # a lock, two concurrent requests would race on stdout.readline() and
+        # each could read the other's response. Serializing here matches the
+        # single-connection nature of the MCP stdio protocol.
+        async with self._stdio_lock:
+            assert self._process is not None
+            assert self._process.stdin is not None
+            assert self._process.stdout is not None
+            payload = json.dumps(request) + "\n"
+            self._process.stdin.write(payload.encode())
+            await self._process.stdin.drain()
+            try:
+                response_line = await asyncio.wait_for(
+                    self._process.stdout.readline(),
+                    timeout=self._request_timeout,
+                )
+            except asyncio.TimeoutError:
+                raise TimeoutError(
+                    f"MCP server did not respond within {self._request_timeout}s"
+                )
+            if not response_line:
+                raise RuntimeError("MCP server closed the connection (stdio).")
+            message = json.loads(response_line.decode())
+            return self._unwrap(message)
 
     async def _send_notification_stdio(self, notification: dict[str, Any]) -> None:
         assert self._process is not None

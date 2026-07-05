@@ -213,3 +213,42 @@ def test_constructor_clamps_max_kbs_to_at_least_one():
 
 def test_constructor_clamps_top_k_per_kb_to_at_least_one():
     assert KnowledgeBaseRouter(top_k_per_kb=0).top_k_per_kb == 1
+
+
+# ---------- failure isolation ------------------------------------------------
+
+
+async def test_kb_router_one_kb_fails_returns_others():
+    """If one KB's retrieve raises, the other KBs' results are still returned.
+
+    Regression for ``asyncio.gather`` without ``return_exceptions=True``:
+    a failing KB used to cancel the whole merged retrieval. With the fix
+    the failure is logged and skipped, so the healthy KBs' results come
+    back.
+    """
+    kb_alpha = _make_fake_kb(
+        "alpha",
+        [1.0, 0.0, 0.0, 0.0],
+        retrieve_results=[
+            {"id": "a1", "document": "alpha doc", "score": 0.9, "metadata": {}},
+        ],
+    )
+    kb_beta = _make_fake_kb(
+        "beta",
+        [0.0, 1.0, 0.0, 0.0],
+        retrieve_results=[
+            {"id": "b1", "document": "beta doc", "score": 0.5, "metadata": {}},
+        ],
+    )
+    # Make beta's retrieve raise.
+    kb_beta.retrieve = AsyncMock(side_effect=RuntimeError("beta down"))
+
+    router = KnowledgeBaseRouter(max_kbs=2, top_k_per_kb=3)
+    router.add_kb(kb_alpha)
+    router.add_kb(kb_beta)
+    results = await router.retrieve("query", top_k=5)
+    # alpha's results are still returned.
+    ids = [r["id"] for r in results]
+    assert "a1" in ids
+    # beta's results are absent (it failed).
+    assert "b1" not in ids

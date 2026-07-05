@@ -48,6 +48,10 @@ class KBManager:
         self._rerank_k = rerank_k
         self._router = KnowledgeBaseRouter()
         self._kbs: dict[str, KnowledgeBase] = {}
+        # Serializes the get-or-create critical section so two concurrent
+        # index_file/index_directory calls targeting the same new KB name do
+        # not both create it (which would orphan the first KB's index).
+        self._kb_lock = asyncio.Lock()
 
     async def create_kb(self, name: str, description: str) -> KnowledgeBase:
         """Create and register a new knowledge base, returning it."""
@@ -75,6 +79,21 @@ class KBManager:
         """Return a registered knowledge base by name, or ``None``."""
         return self._kbs.get(name)
 
+    async def _get_or_create_kb(
+        self, kb_name: str, description: str = ""
+    ) -> KnowledgeBase:
+        """Return the named KB, creating it if missing.
+
+        Holds ``self._kb_lock`` so two concurrent callers targeting the same
+        new KB name do not both invoke :meth:`create_kb` (which would orphan
+        the first KB's FAISS index and any documents already added to it).
+        """
+        async with self._kb_lock:
+            kb = self._kbs.get(kb_name)
+            if kb is None:
+                kb = await self.create_kb(kb_name, description=description)
+            return kb
+
     def list_kbs(self) -> list[str]:
         """Return the names of all registered knowledge bases."""
         return self._router.list_kbs()
@@ -97,9 +116,7 @@ class KBManager:
         which auto-detects the format. If the knowledge base does not exist it
         is created with ``kb_name`` as its description.
         """
-        kb = self._kbs.get(kb_name)
-        if kb is None:
-            kb = await self.create_kb(kb_name, description=kb_name)
+        kb = await self._get_or_create_kb(kb_name, description=kb_name)
         loaded = await asyncio.to_thread(load_file, file_path)
         before = await kb.count()
         await kb.add_documents([loaded.text], metadatas=[{"source": file_path}])
@@ -118,9 +135,7 @@ class KBManager:
         ``.html``). Only the top level of ``dir_path`` is scanned. Returns the
         number of chunks indexed.
         """
-        kb = self._kbs.get(kb_name)
-        if kb is None:
-            kb = await self.create_kb(kb_name, description=description)
+        kb = await self._get_or_create_kb(kb_name, description=description)
         root = Path(dir_path)
         if not root.is_dir():
             raise NotADirectoryError(dir_path)

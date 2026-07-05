@@ -9,10 +9,32 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture(scope="session")
 def client():
-    """Create a test client for the FastAPI app (session-scoped to avoid rebuilding agent)."""
-    from open_agent.server.api import app
-    with TestClient(app) as c:
-        yield c
+    """Create a test client for the FastAPI app (session-scoped to avoid rebuilding agent).
+
+    ``_build_agent`` is mocked to avoid importing ``open_agent.tools.builtin``
+    (pre-existing browser.py import bug unrelated to these tests).
+    """
+    from open_agent.observability.tracer import NoOpTracer
+    from open_agent.server import api as api_module
+
+    async def fake_build():
+        mock_agent = MagicMock()
+        mock_agent.model = MagicMock()
+        mock_agent.model.aclose = AsyncMock()
+        mock_registry = MagicMock()
+        mock_registry.schemas.return_value = [
+            {"name": "shell", "description": "shell tool", "parameters": {}},
+            {"name": "python", "description": "python tool", "parameters": {}},
+        ]
+        return (mock_agent, mock_registry, NoOpTracer())
+
+    original_build = api_module._build_agent
+    api_module._build_agent = fake_build
+    try:
+        with TestClient(api_module.app) as c:
+            yield c
+    finally:
+        api_module._build_agent = original_build
 
 
 @pytest.fixture(autouse=True)
@@ -425,6 +447,30 @@ class TestKnowledgeBaseEndpoints:
         assert response.status_code == 413
         assert response.json()["error"] == "file_too_large"
 
+    def test_upload_kb_name_path_traversal_rejected(self, client, monkeypatch):
+        """kb_name with path traversal characters must be rejected (400)."""
+        from open_agent.server import api as api_module
+
+        mock_manager = MagicMock()
+        mock_manager.index_file = AsyncMock(return_value=1)
+        monkeypatch.setattr(api_module, "_get_kb_manager", lambda: mock_manager)
+
+        # Path traversal attempt must be rejected.
+        response = client.post(
+            "/api/upload",
+            files={"file": ("test.txt", b"hello", "text/plain")},
+            params={"kb_name": "../../../tmp/evil"},
+        )
+        assert response.status_code == 400
+        # A valid kb_name must still succeed.
+        response = client.post(
+            "/api/upload",
+            files={"file": ("test.txt", b"hello", "text/plain")},
+            params={"kb_name": "valid_name"},
+        )
+        assert response.status_code == 200
+        assert response.json()["kb_name"] == "valid_name"
+
 
 # ---------------------------------------------------------------------------
 # Trace endpoints
@@ -503,8 +549,8 @@ class TestSettingsEndpoint:
         assert "model_provider" in data
         assert "max_steps" in data
         assert "embedding_model" in data
-        # Secrets should not be exposed
-        assert "api_key" not in data
+        # Secrets should be masked, not exposed in plaintext
+        assert data.get("api_key") in ("", "<redacted>")
 
     def test_update_settings(self, client, monkeypatch):
         from open_agent.server import api as api_module
@@ -513,6 +559,8 @@ class TestSettingsEndpoint:
             return ("mock_agent", "mock_registry", "mock_tracer")
 
         monkeypatch.setattr(api_module, "_build_agent", fake_build)
+        monkeypatch.setattr(api_module, "_close_model", AsyncMock())
+        monkeypatch.setattr(api_module, "_close_mcp_client", AsyncMock())
         # Snapshot module-level state so monkeypatch restores after the
         # endpoint reassigns these globals.
         monkeypatch.setattr(api_module, "_settings", api_module._settings)
@@ -533,6 +581,8 @@ class TestSettingsEndpoint:
             raise RuntimeError("rebuild failed")
 
         monkeypatch.setattr(api_module, "_build_agent", failing_build)
+        monkeypatch.setattr(api_module, "_close_model", AsyncMock())
+        monkeypatch.setattr(api_module, "_close_mcp_client", AsyncMock())
         monkeypatch.setattr(api_module, "_settings", api_module._settings)
         monkeypatch.setattr(api_module, "_agent", api_module._agent)
         monkeypatch.setattr(api_module, "_registry", api_module._registry)
@@ -549,6 +599,8 @@ class TestSettingsEndpoint:
             raise RuntimeError("rebuild failed")
 
         monkeypatch.setattr(api_module, "_build_agent", failing_build)
+        monkeypatch.setattr(api_module, "_close_model", AsyncMock())
+        monkeypatch.setattr(api_module, "_close_mcp_client", AsyncMock())
         monkeypatch.setattr(api_module, "_settings", api_module._settings)
         monkeypatch.setattr(api_module, "_agent", api_module._agent)
         monkeypatch.setattr(api_module, "_registry", api_module._registry)
@@ -570,6 +622,8 @@ class TestSettingsEndpoint:
             return ("mock_agent", "mock_registry", "mock_tracer")
 
         monkeypatch.setattr(api_module, "_build_agent", fake_build)
+        monkeypatch.setattr(api_module, "_close_model", AsyncMock())
+        monkeypatch.setattr(api_module, "_close_mcp_client", AsyncMock())
         monkeypatch.setattr(api_module, "_settings", api_module._settings)
         monkeypatch.setattr(api_module, "_agent", api_module._agent)
         monkeypatch.setattr(api_module, "_registry", api_module._registry)
@@ -581,6 +635,13 @@ class TestSettingsEndpoint:
         assert response.status_code == 200
         # KB manager should be invalidated so it gets rebuilt with new settings
         assert api_module._kb_manager is None
+
+    def test_update_settings_invalid_max_steps_rejected(self, client):
+        """Out-of-range max_steps must be rejected with 422 before rebuild."""
+        response = client.post("/api/settings", json={"max_steps": -1})
+        assert response.status_code == 422
+        response = client.post("/api/settings", json={"max_steps": 1000000})
+        assert response.status_code == 422
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,9 @@
 """Tests for the context-window management helpers."""
 from __future__ import annotations
 
+from unittest.mock import patch
+
+from open_agent.agent import context_window
 from open_agent.agent.context_window import (
     estimate_messages_tokens,
     estimate_tokens,
@@ -140,3 +143,57 @@ def test_truncate_respects_preserve_recent_zero():
     result = truncate_messages(msgs, max_tokens=10, preserve_recent=0, preserve_system=True)
     assert result[0]["role"] == "system"
     assert estimate_messages_tokens(result) <= 10 or len(result) == 1
+
+
+def test_truncate_messages_caches_token_estimation():
+    """Each message's tokens are estimated at most once during truncation loops.
+
+    Without caching the two while-loops would re-encode every remaining message
+    on each iteration (O(n^2)); with the cache each message is encoded at most
+    twice (once for the initial fit check, once when building the cache).
+    """
+    call_count = 0
+
+    def fake_estimate_single(msg: dict, model: str) -> int:
+        nonlocal call_count
+        call_count += 1
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        # Make middle messages large so they get popped by the first loop.
+        return len(content) + 4
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "x" * 100},
+        {"role": "assistant", "content": "y" * 100},
+        {"role": "user", "content": "z" * 100},
+        {"role": "assistant", "content": "recent1"},
+        {"role": "user", "content": "recent2"},
+    ]
+
+    with patch.object(
+        context_window, "_estimate_single_message_tokens", side_effect=fake_estimate_single
+    ):
+        result = truncate_messages(msgs, max_tokens=30, preserve_recent=2)
+
+    # All three middle messages should have been dropped.
+    contents = [m["content"] for m in result]
+    assert "x" * 100 not in contents
+    assert "y" * 100 not in contents
+    assert "z" * 100 not in contents
+    # With caching the call count is linear in the number of messages
+    # (initial check + cache build). Without caching it would be quadratic.
+    n = len(msgs)
+    assert call_count <= 2 * n
+
+
+def test_truncate_messages_system_only_over_limit_truncates():
+    """A single oversized system message is truncated in-place to fit."""
+    msgs = [{"role": "system", "content": "a" * 1000}]
+    result = truncate_messages(msgs, max_tokens=20, preserve_system=True)
+
+    assert len(result) == 1
+    assert result[0]["role"] == "system"
+    assert "...(truncated)" in result[0]["content"]
+    assert estimate_messages_tokens(result) <= 20

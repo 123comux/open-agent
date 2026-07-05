@@ -9,6 +9,7 @@ produced by each backend (e.g. cosine similarity vs. ChromaDB distance).
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 from collections import Counter
@@ -22,6 +23,8 @@ except ImportError:
     _HAS_RANK_BM25 = False
 
 from open_agent.rag.reranker import Reranker, build_reranker
+
+logger = logging.getLogger(__name__)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -193,12 +196,28 @@ class HybridRetriever:
     async def _retrieve_both(
         self, query: str, top_k: int
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Fetch a pooled set of vector and keyword results in parallel."""
+        """Fetch a pooled set of vector and keyword results in parallel.
+
+        Each leg runs independently: if one raises, the other's results are
+        still returned (the failure is logged and treated as empty) so a
+        single backend outage does not sink the whole retrieval.
+        """
         fetch_n = max(top_k * 4, self.rerank_k, 10)
-        vector_results, keyword_results = await asyncio.gather(
+        results = await asyncio.gather(
             self._vector_search(query, fetch_n),
             self._keyword_search(query, fetch_n),
+            return_exceptions=True,
         )
+        vector_results: list[dict[str, Any]] = []
+        keyword_results: list[dict[str, Any]] = []
+        for i, r in enumerate(results):
+            if isinstance(r, BaseException):
+                logger.warning("retrieval leg %d failed: %r", i, r)
+                continue
+            if i == 0:
+                vector_results = r
+            else:
+                keyword_results = r
         return vector_results, keyword_results
 
     def _fuse(

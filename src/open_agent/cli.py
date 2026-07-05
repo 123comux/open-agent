@@ -386,6 +386,77 @@ async def _stream_agent_response(agent: Any, user_input: str) -> None:
     )
 
 
+async def _close_resources(agent: Any) -> None:
+    """Close resources (model httpx client, MCP client) held by ``agent``.
+
+    Runs on session exit so the underlying httpx ``AsyncClient`` is not left
+    bound to a closed event loop.
+    """
+    model = getattr(agent, "model", None)
+    if model is not None:
+        aclose = getattr(model, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def _chat_main(
+    settings: Settings, demo: bool = False, use_langgraph: bool = False
+) -> None:
+    """Run the interactive REPL inside a single event loop.
+
+    Building the agent and streaming every response share one loop so the
+    model's ``httpx.AsyncClient`` is never reused across a closed loop.
+    """
+    agent = await _build_agent(settings, demo=demo, use_langgraph=use_langgraph)
+    mode_label = "demo" if demo else f"{settings.model_provider}/{settings.model_name}"
+    if use_langgraph:
+        mode_label += " (LangGraph)"
+    console.print(
+        Panel(
+            f"Open Agent ready. Mode: {mode_label}. Type 'exit' to quit.",
+            title="open-agent",
+        )
+    )
+    try:
+        while True:
+            try:
+                user_input = await asyncio.to_thread(
+                    console.input, "[bold cyan]you>[/bold cyan] "
+                )
+            except (EOFError, KeyboardInterrupt):
+                console.print("\nGoodbye.")
+                break
+            if user_input.strip().lower() in {"exit", "quit", ":q"}:
+                console.print("Goodbye.")
+                break
+            if not user_input.strip():
+                continue
+            try:
+                await _stream_agent_response(agent, user_input)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]Error:[/red] {exc}")
+                continue
+    finally:
+        await _close_resources(agent)
+
+
+async def _ask_main(
+    settings: Settings,
+    question: str,
+    demo: bool = False,
+    use_langgraph: bool = False,
+) -> None:
+    """Ask a single question within a single event loop."""
+    agent = await _build_agent(settings, demo=demo, use_langgraph=use_langgraph)
+    try:
+        await _stream_agent_response(agent, question)
+    finally:
+        await _close_resources(agent)
+
+
 @app.command()
 def chat(
     demo: bool = typer.Option(
@@ -397,32 +468,7 @@ def chat(
 ) -> None:
     """Start an interactive REPL session with the agent."""
     settings = get_settings()
-    agent = asyncio.run(_build_agent(settings, demo=demo, use_langgraph=langgraph))
-    mode_label = "demo" if demo else f"{settings.model_provider}/{settings.model_name}"
-    if langgraph:
-        mode_label += " (LangGraph)"
-    console.print(
-        Panel(
-            f"Open Agent ready. Mode: {mode_label}. Type 'exit' to quit.",
-            title="open-agent",
-        )
-    )
-    while True:
-        try:
-            user_input = console.input("[bold cyan]you>[/bold cyan] ")
-        except (EOFError, KeyboardInterrupt):
-            console.print("\nGoodbye.")
-            break
-        if user_input.strip().lower() in {"exit", "quit", ":q"}:
-            console.print("Goodbye.")
-            break
-        if not user_input.strip():
-            continue
-        try:
-            asyncio.run(_stream_agent_response(agent, user_input))
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[red]Error:[/red] {exc}")
-            continue
+    asyncio.run(_chat_main(settings, demo=demo, use_langgraph=langgraph))
 
 
 @app.command()
@@ -437,8 +483,7 @@ def ask(
 ) -> None:
     """Ask the agent a single question and print the answer."""
     settings = get_settings()
-    agent = asyncio.run(_build_agent(settings, demo=demo, use_langgraph=langgraph))
-    asyncio.run(_stream_agent_response(agent, question))
+    asyncio.run(_ask_main(settings, question, demo=demo, use_langgraph=langgraph))
 
 
 @app.command()

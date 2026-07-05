@@ -279,3 +279,35 @@ def test_constructor_defaults():
     assert retriever.vector_weight == 0.7
     assert retriever.top_k == 5
     assert retriever.rerank_k == 20
+
+
+# ---------- failure isolation ------------------------------------------------
+
+
+async def test_hybrid_retriever_one_leg_fails_returns_other():
+    """If the vector search leg raises, keyword results are still returned.
+
+    Regression for ``asyncio.gather`` without ``return_exceptions=True``:
+    a failing leg used to cancel the whole retrieval. With the fix the
+    failure is logged and treated as empty, so the keyword leg's results
+    still come back.
+    """
+    store = MockVectorStore(
+        ids=["d1", "d2"],
+        documents=["apple fruit", "banana split"],
+        query_results=[],  # not used because query() raises
+    )
+
+    async def failing_query(
+        query_text: str, n_results: int = 5
+    ) -> list[dict[str, Any]]:
+        raise RuntimeError("vector store down")
+
+    store.query = failing_query  # type: ignore[assignment]
+
+    retriever = HybridRetriever(store, top_k=5)
+    results = await retriever.retrieve("apple")
+    # Keyword search still returns d1 (matches "apple"); d2 does not match.
+    ids = [r["id"] for r in results]
+    assert "d1" in ids
+    assert "d2" not in ids

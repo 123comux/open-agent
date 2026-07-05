@@ -8,15 +8,23 @@ Static actions (``fetch``, ``extract_links``, ``extract_text``) always work.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
+import ipaddress
 import json
 import re
+import socket
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from open_agent.tools.base import Tool
+from open_agent.tools.sandbox import check_path
 
 # Playwright is an optional dependency.
 try:
@@ -26,6 +34,22 @@ try:
 except Exception:  # pragma: no cover
     async_playwright = None
     _PLAYWRIGHT_AVAILABLE = False
+
+
+async def _safe_close(resource: Any) -> None:
+    """Close a Playwright resource, ignoring errors during cleanup."""
+    try:
+        await resource.close()
+    except Exception:
+        pass
+
+
+async def _safe_stop(playwright: Any) -> None:
+    """Stop a Playwright instance, ignoring errors during cleanup."""
+    try:
+        await playwright.stop()
+    except Exception:
+        pass
 
 
 class BrowserTool(Tool):
@@ -118,6 +142,75 @@ class BrowserTool(Tool):
     # ------------------------------------------------------------------
     # Static httpx helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _is_blocked_ip(ip: Any) -> bool:
+        """Return True if the IP address is in a disallowed range.
+
+        Blocks private, loopback, link-local, multicast and unspecified
+        addresses. This covers the cloud metadata endpoint
+        ``169.254.169.254`` (link-local) and all common SSRF targets.
+        """
+        return bool(
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_unspecified
+        )
+
+    @staticmethod
+    async def _validate_url(url: str) -> str | None:
+        """Validate ``url`` for SSRF safety.
+
+        Only ``http``/``https`` URLs are allowed. The host is resolved and
+        every resolved IP is checked against disallowed ranges. IP literals
+        are checked directly without DNS. Returns ``None`` when the URL is
+        allowed, or an error-message string when it is blocked.
+
+        DNS resolution failures are treated as allowed (fail-open): an
+        unresolvable host cannot be reached anyway, and this keeps the tool
+        usable in offline/test environments. IP-literal checks always apply.
+        """
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return f"Error: URL scheme '{parsed.scheme}' is not allowed (only http/https)."
+        host = parsed.hostname
+        if not host:
+            return "Error: URL has no host."
+
+        # IP literal: check directly (no DNS needed).
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None:
+            if BrowserTool._is_blocked_ip(ip):
+                return (
+                    f"Error: URL host '{host}' is a blocked address "
+                    "(private/loopback/link-local/multicast/unspecified)."
+                )
+            return None
+
+        # Domain: resolve off the event loop and check every resolved IP.
+        try:
+            infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        except socket.gaierror:
+            # Cannot resolve — cannot confirm a private IP; allow.
+            return None
+        for info in infos:
+            sockaddr = info[4]
+            ip_str = sockaddr[0]
+            try:
+                resolved = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            if BrowserTool._is_blocked_ip(resolved):
+                return (
+                    f"Error: URL host '{host}' resolves to blocked address "
+                    f"'{ip_str}'."
+                )
+        return None
+
     async def _fetch(self, url: str) -> str:
         headers = {"User-Agent": self.USER_AGENT}
         async with httpx.AsyncClient(
@@ -182,37 +275,38 @@ class BrowserTool(Tool):
             return f"text={selector}"
         return selector
 
-    async def _with_page(self, url: str) -> Any:
+    @asynccontextmanager
+    async def _with_page(self, url: str) -> AsyncIterator[Any]:
         """Async context manager yielding a Playwright page for ``url``.
 
-        Caller receives ``(playwright, browser, context, page)`` so it can
-        close them. If setup fails after the browser is launched, the browser
-        and playwright instance are cleaned up before re-raising.
+        Resources (playwright, browser, context) are registered with an
+        :class:`contextlib.AsyncExitStack` so they are always cleaned up even
+        if setup fails partway (e.g. ``chromium.launch`` raises) or one of the
+        close calls raises. Each close is wrapped in its own try/except so a
+        single failure cannot skip the remaining cleanups.
         """
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        try:
+        async with contextlib.AsyncExitStack() as stack:
+            playwright = await async_playwright().start()
+            stack.push_async_callback(_safe_stop, playwright)
+            browser = await playwright.chromium.launch(headless=True)
+            stack.push_async_callback(_safe_close, browser)
             context = await browser.new_context(
                 viewport=self.DEFAULT_VIEWPORT,
                 user_agent=self.USER_AGENT,
             )
+            stack.push_async_callback(_safe_close, context)
             page = await context.new_page()
-            await page.goto(url, wait_until="domcontentloaded", timeout=int(self.TIMEOUT * 1000))
-            return playwright, browser, context, page
-        except Exception:
-            await browser.close()
-            await playwright.stop()
-            raise
+            await page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(self.TIMEOUT * 1000),
+            )
+            yield page
 
     async def _navigate(self, url: str) -> str:
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        async with self._with_page(url) as page:
             title = await page.title()
             return f"Navigated to {url}. Title: {title}"
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     async def _screenshot(self, url: str, kwargs: dict[str, Any]) -> str:
         selector = str(kwargs.get("selector", "")) or None
@@ -220,8 +314,12 @@ class BrowserTool(Tool):
         full_page = bool(kwargs.get("full_page", False))
         output_path = str(kwargs.get("output_path", "")) or None
 
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        if output_path:
+            blocked = check_path(output_path)
+            if blocked:
+                return blocked
+
+        async with self._with_page(url) as page:
             target = page
             if selector:
                 locator = page.locator(self._selector_for(selector, selector_type))
@@ -237,10 +335,6 @@ class BrowserTool(Tool):
             screenshot_bytes = await target.screenshot(full_page=full_page)
             data_url = "data:image/png;base64," + base64.b64encode(screenshot_bytes).decode("ascii")
             return f"Screenshot (base64 PNG): {data_url}"
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     async def _click(self, url: str, kwargs: dict[str, Any]) -> str:
         selector = str(kwargs.get("selector", ""))
@@ -248,18 +342,13 @@ class BrowserTool(Tool):
         if not selector:
             return "Error: 'selector' is required for click action."
 
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        async with self._with_page(url) as page:
             locator = page.locator(self._selector_for(selector, selector_type))
             await locator.wait_for(state="visible", timeout=5000)
             await locator.click()
             await page.wait_for_load_state("networkidle", timeout=5000)
             title = await page.title()
             return f"Clicked '{selector}'. Current title: {title}"
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     async def _fill(self, url: str, kwargs: dict[str, Any]) -> str:
         selector = str(kwargs.get("selector", ""))
@@ -268,23 +357,17 @@ class BrowserTool(Tool):
         if not selector:
             return "Error: 'selector' is required for fill action."
 
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        async with self._with_page(url) as page:
             locator = page.locator(self._selector_for(selector, selector_type))
             await locator.wait_for(state="visible", timeout=5000)
             await locator.fill(text)
             return f"Filled '{selector}' with provided text."
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     async def _get_text(self, url: str, kwargs: dict[str, Any]) -> str:
         selector = str(kwargs.get("selector", "")) or None
         selector_type = str(kwargs.get("selector_type", "css"))
 
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        async with self._with_page(url) as page:
             if selector:
                 locator = page.locator(self._selector_for(selector, selector_type))
                 await locator.wait_for(state="visible", timeout=5000)
@@ -292,14 +375,9 @@ class BrowserTool(Tool):
             else:
                 text = await page.inner_text("body")
             return str(text).strip()
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     async def _get_links(self, url: str) -> str:
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        async with self._with_page(url) as page:
             links = await page.eval_on_selector_all(
                 "a",
                 """elements => elements
@@ -307,24 +385,15 @@ class BrowserTool(Tool):
                     .filter(item => item.href)""",
             )
             return json.dumps(links, ensure_ascii=False)
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     async def _evaluate(self, url: str, kwargs: dict[str, Any]) -> str:
         script = str(kwargs.get("script", ""))
         if not script:
             return "Error: 'script' is required for evaluate action."
 
-        pw, browser, context, page = await self._with_page(url)
-        try:
+        async with self._with_page(url) as page:
             result = await page.evaluate(script)
             return json.dumps(result, ensure_ascii=False, default=str)
-        finally:
-            await context.close()
-            await browser.close()
-            await pw.stop()
 
     # ------------------------------------------------------------------
     # Public API
@@ -354,6 +423,13 @@ class BrowserTool(Tool):
 
         if not url:
             return "Error: 'url' is required."
+
+        # SSRF guard: always validate the URL (http/https only, no
+        # private/loopback/link-local/multicast/unspecified targets) before
+        # any network action. Applied to both static and interactive actions.
+        url_error = await self._validate_url(url)
+        if url_error:
+            return url_error
 
         if action in static_actions:
             try:

@@ -231,3 +231,38 @@ def test_check_path_blocks_traversal_when_enabled(monkeypatch):
 def test_check_path_returns_none_when_disabled(monkeypatch):
     monkeypatch.setattr("open_agent.tools.sandbox._sandbox_enabled", lambda: False)
     assert check_path("../etc/passwd") is None
+
+
+# ---------------------------------------------------------------------------
+# FileTool atomic write & missing-content (L4, L5)
+# ---------------------------------------------------------------------------
+
+
+async def test_file_write_atomic(tmp_path):
+    """Regression (L4): write must be atomic — no .tmp residue after success."""
+    from open_agent.tools.builtin.file import FileTool
+
+    tool = FileTool()
+    target = tmp_path / "out.txt"
+    result = await tool.execute(
+        action="write", path=str(target), content="hello atomic"
+    )
+    assert "Wrote" in result
+    # Target exists with the right content.
+    assert target.read_text(encoding="utf-8") == "hello atomic"
+    # No temp file leftover in the directory.
+    assert not (tmp_path / "out.txt.tmp").exists()
+    assert not (tmp_path / "out.tmp").exists()
+
+
+async def test_file_write_missing_content_returns_error(tmp_path):
+    """Regression (L5): write without 'content' must error, not silently empty."""
+    from open_agent.tools.builtin.file import FileTool
+
+    tool = FileTool()
+    target = tmp_path / "missing.txt"
+    result = await tool.execute(action="write", path=str(target))
+    assert "Error" in result
+    assert "content" in result
+    # Target must not have been created.
+    assert not target.exists()

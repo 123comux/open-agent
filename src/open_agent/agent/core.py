@@ -8,6 +8,7 @@ direct answer or ``max_steps`` is reached.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -91,6 +92,10 @@ class Agent:
         self.tracer = tracer or NoOpTracer()
         self.planner = Planner()
         self.executor = ToolExecutor(tool_registry)
+        # Serialize concurrent run/run_stream calls on the same Agent instance:
+        # they share ``memory`` and ``session_manager`` which are not safe for
+        # concurrent mutation.
+        self._run_lock = asyncio.Lock()
 
     def _apply_context_window(self, messages: list[Message]) -> list[Message]:
         """Truncate ``messages`` to fit within ``max_context_tokens``.
@@ -310,68 +315,91 @@ class Agent:
         Returns an AgentOutput with the final response, the number of reasoning
         steps taken, and a log of tool calls made.
         """
-        trace, root, messages, tool_schemas = await self._prepare_run(
-            user_input, session_id
-        )
+        async with self._run_lock:
+            trace, root, messages, tool_schemas = await self._prepare_run(
+                user_input, session_id
+            )
 
-        tool_calls_made: list[dict[str, Any]] = []
-        trace_ended = False
-        try:
-            for step in range(1, self.max_steps + 1):
+            tool_calls_made: list[dict[str, Any]] = []
+            trace_ended = False
+            try:
+                for step in range(1, self.max_steps + 1):
+                    messages = self._apply_context_window(messages)
+                    response, plan = await self._llm_step(
+                        trace, root, step, messages, tool_schemas
+                    )
+
+                    if isinstance(plan, DirectResponse):
+                        final_text = plan.text or response.content
+                        self._persist_exchange(user_input, final_text, session_id)
+                        await self._remember_exchange(
+                            user_input, final_text, session_id
+                        )
+                        self.tracer.end_span(
+                            root, output_data={"response": final_text, "steps": step}
+                        )
+                        self.tracer.end_trace(
+                            trace, output_data={"response": final_text, "steps": step}
+                        )
+                        trace_ended = True
+                        return AgentOutput(
+                            response=final_text,
+                            steps=step,
+                            tool_calls_made=tool_calls_made,
+                            trace_id=trace.id,
+                        )
+
+                    call: ToolCall = plan
+                    await self._execute_tool_call(
+                        trace, root, step, call, response, messages, tool_calls_made
+                    )
+
+                # Exhausted steps: ask the model for a final summary based on
+                # context, wrapped in an ``llm`` span (mirrors ``_llm_step``).
+                messages.append(
+                    Message(
+                        role="user",
+                        content="Maximum steps reached. Provide your best final answer now.",
+                    )
+                )
                 messages = self._apply_context_window(messages)
-                response, plan = await self._llm_step(
-                    trace, root, step, messages, tool_schemas
+                llm_start = time.monotonic()
+                final_span = self.tracer.start_span(
+                    trace,
+                    root,
+                    "llm",
+                    "llm_final_summary",
+                    input_data={"messages": len(messages), "tools": None},
                 )
-
-                if isinstance(plan, DirectResponse):
-                    final_text = plan.text or response.content
-                    self._persist_exchange(user_input, final_text, session_id)
-                    await self._remember_exchange(user_input, final_text, session_id)
+                try:
+                    final = await self.model.chat(messages, tools=None)
+                    final_latency_ms = int((time.monotonic() - llm_start) * 1000)
                     self.tracer.end_span(
-                        root, output_data={"response": final_text, "steps": step}
+                        final_span,
+                        output_data=final.model_dump(),
+                        metrics={"latency_ms": final_latency_ms},
                     )
-                    self.tracer.end_trace(
-                        trace, output_data={"response": final_text, "steps": step}
-                    )
-                    trace_ended = True
-                    return AgentOutput(
-                        response=final_text,
-                        steps=step,
-                        tool_calls_made=tool_calls_made,
-                        trace_id=trace.id,
-                    )
-
-                call: ToolCall = plan
-                await self._execute_tool_call(
-                    trace, root, step, call, response, messages, tool_calls_made
+                except Exception:
+                    self.tracer.end_span(final_span, status="error")
+                    raise
+                root.children.append(final_span)
+                final_text = final.content or (
+                    "I was unable to complete the task within the step limit."
                 )
-
-            # Exhausted steps: ask the model for a final summary based on context.
-            messages.append(
-                Message(
-                    role="user",
-                    content="Maximum steps reached. Provide your best final answer now.",
+                self._persist_exchange(user_input, final_text, session_id)
+                await self._remember_exchange(user_input, final_text, session_id)
+                self._end_exhausted_trace(trace, root, final_text, tool_calls_made)
+                trace_ended = True
+                return AgentOutput(
+                    response=final_text,
+                    steps=self.max_steps,
+                    tool_calls_made=tool_calls_made,
+                    trace_id=trace.id,
                 )
-            )
-            messages = self._apply_context_window(messages)
-            final = await self.model.chat(messages, tools=None)
-            final_text = final.content or (
-                "I was unable to complete the task within the step limit."
-            )
-            self._persist_exchange(user_input, final_text, session_id)
-            await self._remember_exchange(user_input, final_text, session_id)
-            self._end_exhausted_trace(trace, root, final_text, tool_calls_made)
-            trace_ended = True
-            return AgentOutput(
-                response=final_text,
-                steps=self.max_steps,
-                tool_calls_made=tool_calls_made,
-                trace_id=trace.id,
-            )
-        finally:
-            if not trace_ended:
-                self.tracer.end_span(root, status="error")
-                self.tracer.end_trace(trace)
+            finally:
+                if not trace_ended:
+                    self.tracer.end_span(root, status="error")
+                    self.tracer.end_trace(trace)
 
     async def run_stream(
         self, user_input: str, session_id: str = "default"
@@ -392,108 +420,136 @@ class Agent:
         response is produced through :meth:`stream_chat` so its tokens can be
         streamed to the caller as they arrive.
         """
-        trace, root, messages, tool_schemas = await self._prepare_run(
-            user_input, session_id, trace_name="agent.run_stream"
-        )
+        async with self._run_lock:
+            trace, root, messages, tool_schemas = await self._prepare_run(
+                user_input, session_id, trace_name="agent.run_stream"
+            )
 
-        tool_calls_made: list[dict[str, Any]] = []
-        trace_ended = False
-        try:
-            for step in range(1, self.max_steps + 1):
-                messages = self._apply_context_window(messages)
-                response, plan = await self._llm_step(
-                    trace, root, step, messages, tool_schemas
-                )
-
-                if isinstance(plan, DirectResponse):
-                    final_text = ""
-                    stream_span = self.tracer.start_span(
-                        trace, root, "llm_stream", "final_stream"
+            tool_calls_made: list[dict[str, Any]] = []
+            trace_ended = False
+            try:
+                for step in range(1, self.max_steps + 1):
+                    messages = self._apply_context_window(messages)
+                    response, plan = await self._llm_step(
+                        trace, root, step, messages, tool_schemas
                     )
-                    stream_start = time.monotonic()
-                    async for chunk in self.model.stream_chat(messages, tools=tool_schemas):
+
+                    if isinstance(plan, DirectResponse):
+                        final_text = ""
+                        stream_span = self.tracer.start_span(
+                            trace, root, "llm_stream", "final_stream"
+                        )
+                        stream_start = time.monotonic()
+                        async for chunk in self.model.stream_chat(
+                            messages, tools=tool_schemas
+                        ):
+                            final_text += chunk
+                            yield {"type": "token", "content": chunk}
+                        stream_latency_ms = int(
+                            (time.monotonic() - stream_start) * 1000
+                        )
+                        if not final_text:
+                            final_text = plan.text or response.content
+                            yield {"type": "token", "content": final_text}
+                        self.tracer.end_span(
+                            stream_span,
+                            output_data={"response": final_text},
+                            metrics={"latency_ms": stream_latency_ms},
+                        )
+                        root.children.append(stream_span)
+                        self._persist_exchange(
+                            user_input, final_text, session_id
+                        )
+                        await self._remember_exchange(
+                            user_input, final_text, session_id
+                        )
+                        self.tracer.end_span(
+                            root, output_data={"response": final_text, "steps": step}
+                        )
+                        self.tracer.end_trace(
+                            trace, output_data={"response": final_text, "steps": step}
+                        )
+                        trace_ended = True
+                        yield {
+                            "type": "done",
+                            "response": final_text,
+                            "steps": step,
+                            "tool_calls_made": tool_calls_made,
+                            "trace_id": trace.id,
+                        }
+                        return
+                    call: ToolCall = plan
+                    yield {
+                        "type": "thought",
+                        "content": f"Step {step}: Using {call.name} to gather information",
+                        "step": step,
+                    }
+                    yield {
+                        "type": "tool_start",
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    }
+                    observation = await self._execute_tool_call(
+                        trace, root, step, call, response, messages, tool_calls_made
+                    )
+                    yield {
+                        "type": "tool_end",
+                        "name": call.name,
+                        "observation": observation.text,
+                        "is_error": observation.is_error,
+                    }
+                    yield {
+                        "type": "thought",
+                        "content": f"Step {step}: Received result from {call.name}, analyzing...",
+                        "step": step,
+                    }
+
+                # Exhausted steps: stream a final summary based on the context
+                # so far, wrapped in an ``llm_stream`` span (mirrors the
+                # direct-answer streaming path above).
+                messages.append(
+                    Message(
+                        role="user",
+                        content="Maximum steps reached. Provide your best final answer now.",
+                    )
+                )
+                final_text = ""
+                messages = self._apply_context_window(messages)
+                stream_span = self.tracer.start_span(
+                    trace, root, "llm_stream", "final_summary_stream"
+                )
+                stream_start = time.monotonic()
+                try:
+                    async for chunk in self.model.stream_chat(messages, tools=None):
                         final_text += chunk
                         yield {"type": "token", "content": chunk}
-                    stream_latency_ms = int((time.monotonic() - stream_start) * 1000)
-                    if not final_text:
-                        final_text = plan.text or response.content
-                        yield {"type": "token", "content": final_text}
+                    stream_latency_ms = int(
+                        (time.monotonic() - stream_start) * 1000
+                    )
                     self.tracer.end_span(
                         stream_span,
                         output_data={"response": final_text},
                         metrics={"latency_ms": stream_latency_ms},
                     )
-                    root.children.append(stream_span)
-                    self._persist_exchange(user_input, final_text, session_id)
-                    await self._remember_exchange(user_input, final_text, session_id)
-                    self.tracer.end_span(
-                        root, output_data={"response": final_text, "steps": step}
-                    )
-                    self.tracer.end_trace(
-                        trace, output_data={"response": final_text, "steps": step}
-                    )
-                    trace_ended = True
-                    yield {
-                        "type": "done",
-                        "response": final_text,
-                        "steps": step,
-                        "tool_calls_made": tool_calls_made,
-                        "trace_id": trace.id,
-                    }
-                    return
-                call: ToolCall = plan
+                except Exception:
+                    self.tracer.end_span(stream_span, status="error")
+                    raise
+                root.children.append(stream_span)
+                if not final_text:
+                    final_text = "I was unable to complete the task within the step limit."
+                    yield {"type": "token", "content": final_text}
+                self._persist_exchange(user_input, final_text, session_id)
+                await self._remember_exchange(user_input, final_text, session_id)
+                self._end_exhausted_trace(trace, root, final_text, tool_calls_made)
+                trace_ended = True
                 yield {
-                    "type": "thought",
-                    "content": f"Step {step}: Deciding to use {call.name} to gather information",
-                    "step": step,
+                    "type": "done",
+                    "response": final_text,
+                    "steps": self.max_steps,
+                    "tool_calls_made": tool_calls_made,
+                    "trace_id": trace.id,
                 }
-                yield {
-                    "type": "tool_start",
-                    "name": call.name,
-                    "arguments": call.arguments,
-                }
-                observation = await self._execute_tool_call(
-                    trace, root, step, call, response, messages, tool_calls_made
-                )
-                yield {
-                    "type": "tool_end",
-                    "name": call.name,
-                    "observation": observation.text,
-                    "is_error": observation.is_error,
-                }
-                yield {
-                    "type": "thought",
-                    "content": f"Step {step}: Received result from {call.name}, analyzing...",
-                    "step": step,
-                }
-
-            # Exhausted steps: stream a final summary based on the context so far.
-            messages.append(
-                Message(
-                    role="user",
-                    content="Maximum steps reached. Provide your best final answer now.",
-                )
-            )
-            final_text = ""
-            messages = self._apply_context_window(messages)
-            async for chunk in self.model.stream_chat(messages, tools=None):
-                final_text += chunk
-                yield {"type": "token", "content": chunk}
-            if not final_text:
-                final_text = "I was unable to complete the task within the step limit."
-                yield {"type": "token", "content": final_text}
-            self._persist_exchange(user_input, final_text, session_id)
-            await self._remember_exchange(user_input, final_text, session_id)
-            self._end_exhausted_trace(trace, root, final_text, tool_calls_made)
-            trace_ended = True
-            yield {
-                "type": "done",
-                "response": final_text,
-                "steps": self.max_steps,
-                "tool_calls_made": tool_calls_made,
-                "trace_id": trace.id,
-            }
-        finally:
-            if not trace_ended:
-                self.tracer.end_span(root, status="error")
-                self.tracer.end_trace(trace)
+            finally:
+                if not trace_ended:
+                    self.tracer.end_span(root, status="error")
+                    self.tracer.end_trace(trace)

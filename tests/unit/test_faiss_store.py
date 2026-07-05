@@ -270,3 +270,80 @@ async def test_concurrent_adds_no_deadlock(store):
         store.add(["c"], ["cherry"]),
     )
     assert sorted(store._ids) == ["a", "b", "c"]
+
+
+# ---------- query / delete race --------------------------------------------
+
+
+async def test_faiss_store_query_concurrent_with_delete_safe(store):
+    """Concurrent query + delete must not raise or return mismatched
+    id/document/metadata pairs.
+
+    Regression for the race where ``query`` read ``len(self._ids)`` to
+    compute ``k`` before awaiting the embedding (releasing the loop), then
+    searched the *new* index and read the *new* ``_ids``/``_documents``
+    lists after a concurrent ``delete`` had rebuilt them. With the fix,
+    ``query`` holds ``self._lock`` during the search + parallel-list reads
+    so it observes a consistent snapshot.
+    """
+    import time
+
+    # Wrap the mock model's encode with a small delay so the embedding
+    # to_thread call yields the event loop long enough for delete to run
+    # inside the query window (exercising the race).
+    original_encode = store._model.encode
+
+    def slow_encode(texts: list[str], **kwargs: Any) -> np.ndarray:
+        time.sleep(0.005)
+        return original_encode(texts, **kwargs)
+
+    store._model.encode = slow_encode
+
+    ids = [f"id{i}" for i in range(20)]
+    docs = [f"document content {i}" for i in range(20)]
+    metas = [{"n": i} for i in range(20)]
+    await store.add(ids, docs, metas)
+
+    errors: list[str] = []
+
+    async def keep_querying() -> None:
+        for _ in range(50):
+            try:
+                results = await store.query("document content 0", n_results=5)
+            except Exception as e:  # noqa: BLE001 - want to capture any error
+                errors.append(f"query raised: {e!r}")
+                return
+            # For every returned id that is still present in the current
+            # store state, the document and metadata must match (no
+            # cross-wiring caused by reading a stale k against new lists).
+            id_to_doc = dict(zip(store._ids, store._documents))
+            id_to_meta = dict(zip(store._ids, store._metadatas))
+            for r in results:
+                rid = r["id"]
+                if rid not in id_to_doc:
+                    # Deleted after query returned; cannot check consistency.
+                    continue
+                if r["document"] != id_to_doc[rid]:
+                    errors.append(
+                        f"document mismatch: id={rid!r} "
+                        f"got={r['document']!r} want={id_to_doc[rid]!r}"
+                    )
+                    return
+                if r["metadata"] != id_to_meta[rid]:
+                    errors.append(
+                        f"metadata mismatch: id={rid!r} "
+                        f"got={r['metadata']!r} want={id_to_meta[rid]!r}"
+                    )
+                    return
+
+    async def keep_deleting() -> None:
+        # Delete ids one at a time to interleave with the ongoing queries.
+        for i in range(20):
+            try:
+                await store.delete([f"id{i}"])
+            except Exception as e:  # noqa: BLE001 - want to capture any error
+                errors.append(f"delete raised: {e!r}")
+                return
+
+    await asyncio.gather(keep_querying(), keep_deleting())
+    assert not errors, f"concurrent query/delete produced errors: {errors}"
