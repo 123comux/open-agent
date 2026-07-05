@@ -76,6 +76,22 @@ async def _build_agent() -> tuple[Any, Any, Tracer]:
         model = OllamaModel(
             base_url=settings.base_url, model=settings.model_name, timeout=settings.request_timeout
         )
+    elif provider == "zhipu":
+        from open_agent.models.zhipu_provider import ZHIPU_DEFAULT_BASE_URL, ZhipuModel
+
+        # Use Zhipu default base_url unless the user explicitly overrode it
+        # away from the OpenAI default.
+        base_url = (
+            settings.base_url
+            if settings.base_url != "https://api.openai.com/v1"
+            else ZHIPU_DEFAULT_BASE_URL
+        )
+        model = ZhipuModel(
+            api_key=settings.api_key,
+            base_url=base_url,
+            model=settings.model_name,
+            timeout=settings.request_timeout,
+        )
     else:
         from open_agent.models.openai_provider import OpenAIModel
 
@@ -192,7 +208,7 @@ class ChatResponse(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     """Editable subset of :class:`Settings` exposed through the API."""
 
-    model_provider: Literal["openai", "anthropic", "ollama"] | None = None
+    model_provider: Literal["openai", "anthropic", "ollama", "zhipu"] | None = None
     api_key: str | None = None
     base_url: str | None = None
     model_name: str | None = None

@@ -10,7 +10,7 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, model_validator
 
-_PROVIDER_VALUES = ("openai", "anthropic", "ollama")
+_PROVIDER_VALUES = ("openai", "anthropic", "ollama", "zhipu")
 _OBSERVABILITY_VALUES = ("local", "langsmith", "langfuse")
 
 
@@ -58,7 +58,7 @@ class Settings(BaseModel):
     # Secret field names — values are masked in to_safe_dict()
     _SECRET_FIELD_SUFFIXES = ("_key", "_token", "_secret")
 
-    model_provider: Literal["openai", "anthropic", "ollama"] = "openai"
+    model_provider: Literal["openai", "anthropic", "ollama", "zhipu"] = "openai"
     api_key: str = ""
     base_url: str = "https://api.openai.com/v1"
     model_name: str = "gpt-4o-mini"
@@ -120,8 +120,8 @@ class Settings(BaseModel):
             return os.environ.get(f"OPEN_AGENT_{name}", default)
 
         provider_raw = env("MODEL_PROVIDER", "openai") or "openai"
-        provider: Literal["openai", "anthropic", "ollama"] = cast(
-            "Literal['openai', 'anthropic', 'ollama']",
+        provider: Literal["openai", "anthropic", "ollama", "zhipu"] = cast(
+            "Literal['openai', 'anthropic', 'ollama', 'zhipu']",
             provider_raw if provider_raw in _PROVIDER_VALUES else "openai",
         )
         obs_provider_raw = env("OBSERVABILITY_PROVIDER", "local") or "local"
