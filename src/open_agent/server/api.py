@@ -837,6 +837,10 @@ async def update_settings_endpoint(request: SettingsUpdateRequest) -> dict[str, 
             _settings = old_settings
             _kb_manager = old_kb_manager
             _session_manager = old_session_manager
+            # Old agent's MCP client was closed above; mark as not ready so
+            # /api/ready reports 503 until a successful rebuild or restart.
+            _agent = None
+            _registry = None
             return JSONResponse(
                 status_code=500,
                 content={"error": "rebuild_failed", "message": "settings update failed"},

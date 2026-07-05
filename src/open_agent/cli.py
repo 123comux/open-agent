@@ -197,6 +197,7 @@ async def _build_agent(
         registry.register(tool)
 
     # Load MCP servers if configured.
+    mcp_client: Any = None
     if settings.mcp_servers_file:
         try:
             from open_agent.mcp import MCPClient, adapt_mcp_tools, load_mcp_servers
@@ -244,11 +245,13 @@ async def _build_agent(
         try:
             from open_agent.agent.langgraph_agent import LangGraphAgent
 
-            return LangGraphAgent(
+            lg_agent: Any = LangGraphAgent(
                 model=model,
                 tools=list(registry._tools.values()),
                 max_steps=settings.max_steps,
             )
+            lg_agent._mcp_client = mcp_client
+            return lg_agent
         except ImportError as exc:
             console.print(
                 f"[yellow]LangGraph not available ({exc}), "
@@ -272,13 +275,15 @@ async def _build_agent(
 
     from open_agent.agent.core import Agent
 
-    return Agent(
+    agent = Agent(
         model=model,
         tool_registry=registry,
         max_steps=settings.max_steps,
         long_term_memory=long_term_memory,
         tracer=tracer,
     )
+    agent._mcp_client = mcp_client  # type: ignore[attr-defined]
+    return agent
 
 
 def _print_thinking_chain(output: Any) -> None:
@@ -389,9 +394,17 @@ async def _stream_agent_response(agent: Any, user_input: str) -> None:
 async def _close_resources(agent: Any) -> None:
     """Close resources (model httpx client, MCP client) held by ``agent``.
 
-    Runs on session exit so the underlying httpx ``AsyncClient`` is not left
-    bound to a closed event loop.
+    Runs on session exit so the underlying httpx ``AsyncClient`` and MCP stdio
+    subprocesses are not left bound to a closed event loop.
     """
+    mcp_client = getattr(agent, "_mcp_client", None)
+    if mcp_client is not None:
+        close = getattr(mcp_client, "close", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:  # noqa: BLE001
+                pass
     model = getattr(agent, "model", None)
     if model is not None:
         aclose = getattr(model, "aclose", None)
@@ -558,12 +571,24 @@ def evaluate(
 
     if demo:
         evaluator = RAGEvaluator(model=None)
+        results = asyncio.run(evaluator.evaluate_batch(test_cases))
     else:
         settings = get_settings()
         model = _build_model(settings)
         evaluator = RAGEvaluator(model=model)
 
-    results = asyncio.run(evaluator.evaluate_batch(test_cases))
+        async def _run_eval() -> Any:
+            try:
+                return await evaluator.evaluate_batch(test_cases)
+            finally:
+                aclose = getattr(model, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        results = asyncio.run(_run_eval())
 
     # Print results table
     table = Table(title="RAG Evaluation Results", show_header=True, header_style="bold magenta")
