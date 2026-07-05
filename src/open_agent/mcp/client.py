@@ -44,7 +44,13 @@ class MCPClient:
 
     Usage::
 
-        client = MCPClient([MCPServerConfig(name="fs", command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "."])])
+        client = MCPClient([
+            MCPServerConfig(
+                name="fs",
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-filesystem", "."],
+            )
+        ])
         async with client:
             tools = await client.list_tools()
             result = await client.call_tool("fs/read_file", {"path": "README.md"})
@@ -57,7 +63,7 @@ class MCPClient:
         self._tools: dict[str, Tool] = {}
         self._server_by_tool: dict[str, str] = {}
 
-    async def __aenter__(self) -> "MCPClient":
+    async def __aenter__(self) -> MCPClient:
         await self.connect()
         return self
 

@@ -27,13 +27,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from open_agent.agent.core import Agent, AgentOutput
+from open_agent.models.anthropic_provider import AnthropicModel
 from open_agent.models.base import (
     Message,
     ModelInterface,
     ModelResponse,
     ToolSchema,
 )
-from open_agent.models.anthropic_provider import AnthropicModel
 from open_agent.models.ollama_provider import OllamaModel
 from open_agent.models.openai_provider import OpenAIModel
 from open_agent.tools.registry import ToolRegistry

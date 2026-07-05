@@ -7,6 +7,7 @@ declares a JSON-schema ``parameters`` dict describing its inputs and implements
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -32,7 +33,7 @@ class Tool(ABC):
 
     name: str
     description: str
-    parameters: dict
+    parameters: dict[str, Any]
 
     @abstractmethod
     async def execute(self, **kwargs: object) -> str:
@@ -43,7 +44,7 @@ class Tool(ABC):
         """
         raise NotImplementedError
 
-    def to_schema(self) -> dict:
+    def to_schema(self) -> dict[str, Any]:
         """Return a JSON-schema dict describing this tool (for model binding)."""
         return {
             "name": self.name,

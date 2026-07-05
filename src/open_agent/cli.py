@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 from rich.console import Console
@@ -25,6 +25,10 @@ from rich.table import Table
 from rich.tree import Tree
 
 from open_agent.config import Settings, get_settings
+from open_agent.observability.tracer import NoOpTracer, Tracer
+
+if TYPE_CHECKING:
+    from open_agent.models.base import ModelInterface
 
 # Fix Windows GBK encoding issues with Rich
 if sys.platform == "win32":
@@ -51,7 +55,7 @@ class DemoModel:
         self._call_count = 0
         self._last_content = ""
 
-    async def chat(self, messages, tools=None):
+    async def chat(self, messages: list[Any], tools: list[Any] | None = None) -> Any:
         """Return canned responses that demonstrate the ReAct loop."""
         user_msg = ""
         for m in reversed(messages):
@@ -75,13 +79,18 @@ class DemoModel:
             elif "list" in user_msg and "file" in user_msg:
                 response = self._ModelResponse(
                     content="",
-                    tool_calls=[self._ToolCall(name="file", arguments={"action": "list", "path": "."})],
+                    tool_calls=[
+                        self._ToolCall(name="file", arguments={"action": "list", "path": "."})
+                    ],
                 )
             elif "run" in user_msg or "execute" in user_msg or "command" in user_msg:
                 response = self._ModelResponse(
                     content="",
                     tool_calls=[
-                        self._ToolCall(name="shell", arguments={"command": "echo Hello from Open Agent!"})
+                        self._ToolCall(
+                            name="shell",
+                            arguments={"command": "echo Hello from Open Agent!"},
+                        )
                     ],
                 )
             else:
@@ -102,14 +111,17 @@ class DemoModel:
             # Second call: summarize the tool result
             self._call_count = 0
             response = self._ModelResponse(
-                content="Done! The tool executed successfully. (Demo mode -- connect a real LLM for intelligent responses.)",
+                content=(
+                    "Done! The tool executed successfully. "
+                    "(Demo mode -- connect a real LLM for intelligent responses.)"
+                ),
                 tool_calls=[],
             )
 
         self._last_content = response.content
         return response
 
-    async def stream_chat(self, messages, tools=None):
+    async def stream_chat(self, messages: list[Any], tools: list[Any] | None = None) -> Any:
         """Stream the cached response as a single chunk (demo mode).
 
         :meth:`Agent.run_stream` calls this right after :meth:`chat` returned a
@@ -119,10 +131,8 @@ class DemoModel:
             yield self._last_content
 
 
-def _build_model(settings: Settings):
+def _build_model(settings: Settings) -> ModelInterface:
     """Construct a model from settings (heavy imports kept lazy)."""
-    from open_agent.models.base import ModelInterface
-
     provider = settings.model_provider
     model: ModelInterface
     if provider == "anthropic":
@@ -151,13 +161,19 @@ def _build_model(settings: Settings):
 
 async def _build_agent(
     settings: Settings, demo: bool = False, use_langgraph: bool = False
-):
+) -> Any:
     """Construct an Agent from settings (heavy imports kept lazy)."""
-    from open_agent.tools.builtin import FileTool, KnowledgeBaseTool, PythonTool, ShellTool, WebSearchTool
+    from open_agent.tools.builtin import (
+        FileTool,
+        KnowledgeBaseTool,
+        PythonTool,
+        ShellTool,
+        WebSearchTool,
+    )
     from open_agent.tools.registry import ToolRegistry
 
     if demo:
-        model = DemoModel()
+        model = cast("ModelInterface", DemoModel())
     else:
         model = _build_model(settings)
 
@@ -196,6 +212,34 @@ async def _build_agent(
                 f"[yellow]Warning: failed to load MCP servers: {exc}[/yellow]"
             )
 
+    tracer: Tracer = NoOpTracer()
+    if settings.enable_observability:
+        try:
+            if settings.observability_provider == "langsmith":
+                from open_agent.observability.tracer import LangSmithTracer
+
+                tracer = LangSmithTracer(
+                    api_key=settings.langsmith_api_key or None,
+                    api_url=settings.langsmith_api_url or None,
+                    project_name=settings.langsmith_project or None,
+                )
+            elif settings.observability_provider == "langfuse":
+                from open_agent.observability.tracer import LangfuseTracer
+
+                tracer = LangfuseTracer(
+                    public_key=settings.langfuse_public_key or None,
+                    secret_key=settings.langfuse_secret_key or None,
+                    host=settings.langfuse_host or None,
+                )
+            else:
+                from open_agent.observability.tracer import LocalJsonlTracer
+
+                tracer = LocalJsonlTracer(settings.observability_output_dir)
+        except Exception as exc:  # pragma: no cover
+            console.print(
+                f"[yellow]Warning: failed to initialize observability tracer: {exc}[/yellow]"
+            )
+
     if use_langgraph:
         try:
             from open_agent.agent.langgraph_agent import LangGraphAgent
@@ -206,18 +250,47 @@ async def _build_agent(
                 max_steps=settings.max_steps,
             )
         except ImportError as exc:
-            console.print(f"[yellow]LangGraph not available ({exc}), falling back to core agent.[/yellow]")
+            console.print(
+                f"[yellow]LangGraph not available ({exc}), "
+                "falling back to core agent.[/yellow]"
+            )
+
+    long_term_memory = None
+    if settings.enable_long_term_memory:
+        try:
+            from open_agent.memory.long_term import LongTermMemory
+
+            long_term_memory = LongTermMemory(
+                embedding_model=settings.embedding_model,
+                storage_dir=settings.long_term_memory_dir,
+                top_k=settings.long_term_memory_top_k,
+            )
+        except Exception as exc:  # pragma: no cover - optional integration
+            console.print(
+                f"[yellow]Warning: failed to initialize long-term memory: {exc}[/yellow]"
+            )
 
     from open_agent.agent.core import Agent
 
-    return Agent(model=model, tool_registry=registry, max_steps=settings.max_steps)
+    return Agent(
+        model=model,
+        tool_registry=registry,
+        max_steps=settings.max_steps,
+        long_term_memory=long_term_memory,
+        tracer=tracer,
+    )
 
 
-def _print_thinking_chain(output) -> None:
+def _print_thinking_chain(output: Any) -> None:
     """Display the agent's thinking chain (Thought / Action / Observation)."""
     # Show intent classification if available
     if hasattr(output, "intent") and output.intent:
-        console.print(Panel(f"[bold green]Intent:[/bold green] {output.intent}", title="Intent Classification"))
+        console.print(
+            Panel(
+                f"[bold green]Intent:[/bold green] {output.intent}",
+                title="Intent Classification",
+            )
+        )
 
     # Show sub-tasks if available
     if hasattr(output, "sub_tasks") and output.sub_tasks:
@@ -260,7 +333,7 @@ def _print_thinking_chain(output) -> None:
         console.print(table)
 
 
-async def _stream_agent_response(agent, user_input: str) -> None:
+async def _stream_agent_response(agent: Any, user_input: str) -> None:
     """Run the agent with streaming, printing events as they arrive.
 
     Falls back to the non-streaming :meth:`run` for agents without
@@ -276,7 +349,7 @@ async def _stream_agent_response(agent, user_input: str) -> None:
         )
         return
 
-    tool_calls_made: list[dict] = []
+    tool_calls_made: list[dict[str, Any]] = []
     steps = 0
     console.print("[bold cyan]assistant>[/bold cyan] ", end="")
     async for event in agent.run_stream(user_input):
@@ -315,8 +388,12 @@ async def _stream_agent_response(agent, user_input: str) -> None:
 
 @app.command()
 def chat(
-    demo: bool = typer.Option(False, "--demo", help="Run with a mock model, no API key needed."),
-    langgraph: bool = typer.Option(False, "--langgraph", help="Use LangGraph agent with thinking chain."),
+    demo: bool = typer.Option(
+        False, "--demo", help="Run with a mock model, no API key needed."
+    ),
+    langgraph: bool = typer.Option(
+        False, "--langgraph", help="Use LangGraph agent with thinking chain."
+    ),
 ) -> None:
     """Start an interactive REPL session with the agent."""
     settings = get_settings()
@@ -351,8 +428,12 @@ def chat(
 @app.command()
 def ask(
     question: str,
-    demo: bool = typer.Option(False, "--demo", help="Run with a mock model, no API key needed."),
-    langgraph: bool = typer.Option(False, "--langgraph", help="Use LangGraph agent with thinking chain."),
+    demo: bool = typer.Option(
+        False, "--demo", help="Run with a mock model, no API key needed."
+    ),
+    langgraph: bool = typer.Option(
+        False, "--langgraph", help="Use LangGraph agent with thinking chain."
+    ),
 ) -> None:
     """Ask the agent a single question and print the answer."""
     settings = get_settings()
@@ -400,7 +481,7 @@ def index(
 
 
 @app.command()
-def serve(host: Optional[str] = None, port: Optional[int] = None) -> None:
+def serve(host: str | None = None, port: int | None = None) -> None:
     """Start the FastAPI server."""
     settings = get_settings()
     from open_agent.server.api import main as run_server
@@ -415,6 +496,7 @@ def evaluate(
 ) -> None:
     """Evaluate RAG quality on a set of test cases."""
     import json
+
     from open_agent.rag.evaluation import RAGEvaluator, RAGTestCase
 
     test_data = json.loads(Path(qa_file).read_text(encoding="utf-8"))
@@ -460,13 +542,15 @@ def evaluate(
     console.print(table)
 
     # Print average
-    avg = lambda key: sum(getattr(r, key) for r in results) / len(results)
-    console.print(f"\n[bold]Average Scores:[/bold]")
-    console.print(f"  Faithfulness: {avg('faithfulness'):.3f}")
-    console.print(f"  Relevance:    {avg('answer_relevance'):.3f}")
-    console.print(f"  Recall:       {avg('context_recall'):.3f}")
-    console.print(f"  Precision:    {avg('context_precision'):.3f}")
-    console.print(f"  Overall:      {avg('overall_score'):.3f}")
+    def _avg(key: str) -> float:
+        return float(sum(getattr(r, key) for r in results) / len(results))
+
+    console.print("\n[bold]Average Scores:[/bold]")
+    console.print(f"  Faithfulness: {_avg('faithfulness'):.3f}")
+    console.print(f"  Relevance:    {_avg('answer_relevance'):.3f}")
+    console.print(f"  Recall:       {_avg('context_recall'):.3f}")
+    console.print(f"  Precision:    {_avg('context_precision'):.3f}")
+    console.print(f"  Overall:      {_avg('overall_score'):.3f}")
 
 
 if __name__ == "__main__":

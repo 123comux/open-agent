@@ -1,12 +1,16 @@
 """Knowledge base manager for indexing documents and serving RAG queries."""
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from open_agent.rag.document_loaders import SUPPORTED_EXTENSIONS, load_file
 from open_agent.rag.kb_router import KnowledgeBase, KnowledgeBaseRouter
+
+logger = logging.getLogger(__name__)
 
 
 class KBManager:
@@ -75,6 +79,17 @@ class KBManager:
         """Return the names of all registered knowledge bases."""
         return self._router.list_kbs()
 
+    async def _persist_kb(self, kb: KnowledgeBase) -> None:
+        """Persist the KB's FAISS index to disk if an index path is set."""
+        store = kb._store
+        index_path = getattr(store, "_index_path", None)
+        if index_path:
+            await store.save(index_path)
+        else:
+            logger.debug(
+                "Skipping index persist: no index_path set for KB '%s'", kb.name
+            )
+
     async def index_file(self, file_path: str, kb_name: str) -> int:
         """Index a single document file into a knowledge base; return chunk count.
 
@@ -85,9 +100,10 @@ class KBManager:
         kb = self._kbs.get(kb_name)
         if kb is None:
             kb = await self.create_kb(kb_name, description=kb_name)
-        loaded = load_file(file_path)
+        loaded = await asyncio.to_thread(load_file, file_path)
         before = await kb.count()
         await kb.add_documents([loaded.text], metadatas=[{"source": file_path}])
+        await self._persist_kb(kb)
         after = await kb.count()
         return after - before
 
@@ -113,14 +129,35 @@ class KBManager:
             if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             try:
-                loaded = load_file(str(path))
+                loaded = await asyncio.to_thread(load_file, str(path))
             except OSError:
                 continue
             if not loaded.text.strip():
                 continue
             await kb.add_documents([loaded.text], metadatas=[{"source": str(path)}])
+        await self._persist_kb(kb)
         after = await kb.count()
         return after - before
+
+    def list_documents(self, kb_name: str) -> list[dict[str, Any]]:
+        """Return the documents indexed in ``kb_name``.
+
+        Raises :class:`KeyError` if the knowledge base does not exist.
+        """
+        kb = self._kbs.get(kb_name)
+        if kb is None:
+            raise KeyError(f"Knowledge base '{kb_name}' not found")
+        return kb.list_documents()
+
+    async def delete_document(self, kb_name: str, source: str) -> int:
+        """Delete all chunks from ``source`` in ``kb_name``.
+
+        Raises :class:`KeyError` if the knowledge base does not exist.
+        """
+        kb = self._kbs.get(kb_name)
+        if kb is None:
+            raise KeyError(f"Knowledge base '{kb_name}' not found")
+        return await kb.delete_by_source(source)
 
     async def query(self, question: str, top_k: int = 5) -> dict[str, Any]:
         """Run a full RAG query: route -> retrieve -> build context.

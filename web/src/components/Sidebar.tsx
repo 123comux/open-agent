@@ -1,7 +1,10 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ChatClient } from "../api/client";
 import type { Tool } from "../types";
+import { KnowledgeBaseManager } from "./KnowledgeBaseManager";
 
 interface SidebarProps {
+  client: ChatClient;
   tools: Tool[];
   loading: boolean;
   healthy: boolean | null;
@@ -10,12 +13,14 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
-  onUploadFile: (file: File) => Promise<void>;
+  onRenameSession?: (oldId: string, newId: string) => Promise<void>;
+  onExportSession?: (id: string, fmt: "json" | "md") => Promise<void>;
   /** Settings panel rendered in the sidebar footer. */
   children: ReactNode;
 }
 
 export function Sidebar({
+  client,
   tools,
   loading,
   healthy,
@@ -24,15 +29,30 @@ export function Sidebar({
   onSelectSession,
   onNewSession,
   onDeleteSession,
-  onUploadFile,
+  onRenameSession,
+  onExportSession,
   children,
 }: SidebarProps) {
   const [toolsCollapsed, setToolsCollapsed] = useState(false);
   const [sessionsCollapsed, setSessionsCollapsed] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadMsg, setUploadMsg] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [search, setSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    if (!search.trim()) {
+      setSearchResults(null);
+      return;
+    }
+    const id = setTimeout(() => {
+      client
+        .searchSessions(search)
+        .then((results) => setSearchResults(results.map((r) => r.session_id)))
+        .catch(() => setSearchResults(null));
+    }, 250);
+    return () => clearTimeout(id);
+  }, [search, client]);
+
+  const displayedSessions = searchResults ?? sessions;
 
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-white/5 bg-zinc-950/40">
@@ -73,6 +93,15 @@ export function Sidebar({
               New
             </button>
           </div>
+          <div className="px-2 pb-2">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search sessions…"
+              className="w-full rounded-lg border border-white/10 bg-zinc-900/50 px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-600 outline-none focus:border-emerald-400/50"
+            />
+          </div>
           <button
             type="button"
             onClick={() => setSessionsCollapsed((v) => !v)}
@@ -111,7 +140,7 @@ export function Sidebar({
                   </span>
                 )}
               </button>
-              {sessions
+              {displayedSessions
                 .filter((s) => s !== activeSessionId)
                 .map((s) => (
                   <SessionItem
@@ -120,9 +149,11 @@ export function Sidebar({
                     active={s === activeSessionId}
                     onSelect={onSelectSession}
                     onDelete={onDeleteSession}
+                    onRename={onRenameSession}
+                    onExport={onExportSession}
                   />
                 ))}
-              {sessions.length === 0 && (
+              {displayedSessions.length === 0 && (
                 <p className="px-2 py-1.5 text-[11px] text-zinc-600">
                   No saved sessions yet.
                 </p>
@@ -131,69 +162,9 @@ export function Sidebar({
           )}
         </div>
 
-        {/* File Upload Section */}
+        {/* Knowledge Base Manager */}
         <div className="mb-3">
-          <div className="px-2 py-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              Knowledge Base
-            </span>
-          </div>
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              const f = e.dataTransfer.files[0];
-              if (f) {
-                setUploading(true);
-                setUploadMsg(null);
-                onUploadFile(f)
-                  .then(() => setUploadMsg(`Indexed: ${f.name}`))
-                  .catch((err) => setUploadMsg(`Error: ${err.message}`))
-                  .finally(() => setUploading(false));
-              }
-            }}
-            onClick={() => fileInputRef.current?.click()}
-            className={`cursor-pointer rounded-lg border border-dashed px-3 py-4 text-center transition-colors ${
-              dragOver
-                ? "border-emerald-400/50 bg-emerald-400/10"
-                : "border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/5"
-            }`}
-          >
-            {uploading ? (
-              <p className="text-xs text-emerald-400">Indexing…</p>
-            ) : (
-              <>
-                <svg className="mx-auto mb-1 h-5 w-5 text-zinc-500" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                  <path d="M5.5 17a4.5 4.5 0 01-1.44-8.77 5.5 5.5 0 0110.43-2.49 4.5 4.5 0 011.51 8.76H5.5zM8.5 7.25a.75.75 0 00-1.5 0v4.69L5.78 10.72a.75.75 0 00-1.06 1.06l2.75 2.75a.75.75 0 001.06 0l2.75-2.75a.75.75 0 10-1.06-1.06L8.5 11.94V7.25z" />
-                </svg>
-                <p className="text-[11px] text-zinc-500">Drop file or click to upload</p>
-                <p className="mt-0.5 text-[10px] text-zinc-600">PDF, DOCX, TXT, MD, CSV, JSON</p>
-              </>
-            )}
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) {
-                  setUploading(true);
-                  setUploadMsg(null);
-                  onUploadFile(f)
-                    .then(() => setUploadMsg(`Indexed: ${f.name}`))
-                    .catch((err) => setUploadMsg(`Error: ${err.message}`))
-                    .finally(() => setUploading(false));
-                }
-              }}
-            />
-          </div>
-          {uploadMsg && (
-            <p className={`mt-1.5 px-2 text-[11px] ${uploadMsg.startsWith("Error") ? "text-rose-400" : "text-emerald-400"}`}>
-              {uploadMsg}
-            </p>
-          )}
+          <KnowledgeBaseManager client={client} />
         </div>
 
         <button
@@ -299,12 +270,44 @@ function SessionItem({
   active,
   onSelect,
   onDelete,
+  onRename,
+  onExport,
 }: {
   id: string;
   active: boolean;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
+  onRename?: (oldId: string, newId: string) => Promise<void>;
+  onExport?: (id: string, fmt: "json" | "md") => Promise<void>;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(id);
+
+  if (renaming) {
+    return (
+      <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-zinc-900/50 px-2.5 py-1.5">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && draft.trim() && draft.trim() !== id) {
+              setRenaming(false);
+              onRename?.(id, draft.trim())
+                .then(() => setDraft(draft.trim()))
+                .catch(() => setDraft(id));
+            } else if (e.key === "Escape") {
+              setRenaming(false);
+              setDraft(id);
+            }
+          }}
+          autoFocus
+          className="min-w-0 flex-1 rounded border border-white/10 bg-black/30 px-1.5 py-1 font-mono text-xs text-zinc-200 outline-none focus:border-emerald-400/50"
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       className={`group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition-colors ${
@@ -325,28 +328,67 @@ function SessionItem({
         />
         <span className="truncate font-mono">{id}</span>
       </button>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(id);
-        }}
-        aria-label={`Delete session ${id}`}
-        className="shrink-0 rounded p-1 text-zinc-600 opacity-0 transition-colors hover:bg-rose-500/10 hover:text-rose-400 focus:opacity-100 group-hover:opacity-100"
-      >
-        <svg
-          className="h-3.5 w-3.5"
-          viewBox="0 0 20 20"
-          fill="currentColor"
-          aria-hidden="true"
+      <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+        {onRename && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setRenaming(true);
+              setDraft(id);
+            }}
+            aria-label={`Rename session ${id}`}
+            className="rounded p-1 text-zinc-600 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M5.433 13.917l1.262-3.155A4 4 0 017.58 9.42l6.92-6.918a2.121 2.121 0 013 3l-6.92 6.918c-.383.383-.84.685-1.343.886l-3.154 1.262a.5.5 0 01-.65-.65z" />
+              <path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0010 3H4.75A2.75 2.75 0 002 5.75v9.5A2.75 2.75 0 004.75 18h9.5A2.75 2.75 0 0017 15.25V10a.75.75 0 00-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5z" />
+            </svg>
+          </button>
+        )}
+        {onExport && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const fmt = confirm("Export as Markdown? (Cancel for JSON)") ? "md" : "json";
+              onExport(id, fmt).catch(() => {});
+            }}
+            aria-label={`Export session ${id}`}
+            className="rounded p-1 text-zinc-600 transition-colors hover:bg-emerald-500/10 hover:text-emerald-400"
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fillRule="evenodd"
+                d="M4.5 2A2.5 2.5 0 002 4.5v11A2.5 2.5 0 004.5 18h11a2.5 2.5 0 002.5-2.5v-11A2.5 2.5 0 0015.5 2h-11zm1 2.5a1 1 0 011-1h9a1 1 0 011 1v11a1 1 0 01-1 1h-9a1 1 0 01-1-1v-11zM7 8a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5A.75.75 0 017 8zm0 3.25a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5a.75.75 0 01-.75-.75z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(id);
+          }}
+          aria-label={`Delete session ${id}`}
+          className="rounded p-1 text-zinc-600 transition-colors hover:bg-rose-500/10 hover:text-rose-400"
         >
-          <path
-            fillRule="evenodd"
-            d="M8.75 1A2.75 2.75 0 006 3.75v.5H3.75a.75.75 0 000 1.5h.5l.6 9.4A2.75 2.75 0 007.59 18h4.82a2.75 2.75 0 002.74-2.85l.6-9.4h.5a.75.75 0 000-1.5H14v-.5A2.75 2.75 0 0011.25 1h-2.5zM7.5 3.75c0-.69.56-1.25 1.25-1.25h2.5c.69 0 1.25.56 1.25 1.25v.5h-5v-.5zm-1.7 2.15a.75.75 0 01.8.7l.55 8.4a1.25 1.25 0 002.49 0l.55-8.4a.75.75 0 011.5.1l-.55 8.4a2.75 2.75 0 01-5.49 0l-.55-8.4a.75.75 0 01.7-.8z"
-            clipRule="evenodd"
-          />
-        </svg>
-      </button>
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              fillRule="evenodd"
+              d="M8.75 1A2.75 2.75 0 006 3.75v.5H3.75a.75.75 0 000 1.5h.5l.6 9.4A2.75 2.75 0 007.59 18h4.82a2.75 2.75 0 002.74-2.85l.6-9.4h.5a.75.75 0 000-1.5H14v-.5A2.75 2.75 0 0011.25 1h-2.5zM7.5 3.75c0-.69.56-1.25 1.25-1.25h2.5c.69 0 1.25.56 1.25 1.25v.5h-5v-.5zm-1.7 2.15a.75.75 0 01.8.7l.55 8.4a1.25 1.25 0 002.49 0l.55-8.4a.75.75 0 011.5.1l-.55 8.4a2.75 2.75 0 01-5.49 0l-.55-8.4a.75.75 0 01.7-.8z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }

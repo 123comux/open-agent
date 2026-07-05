@@ -7,6 +7,7 @@ into ChromaDB for vector similarity search.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -15,7 +16,7 @@ class Document:
 
     id: str
     text: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -24,7 +25,7 @@ class Chunk:
 
     document_id: str
     text: str
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Indexer:
@@ -87,9 +88,9 @@ class Indexer:
         windows = []
         i = 0
         while i < len(units):
-            window = units[i : i + self.chunk_size]
-            if window:
-                windows.append("\n\n".join(window))
+            chunk = units[i : i + self.chunk_size]
+            if chunk:
+                windows.append("\n\n".join(chunk))
             i += step
         return windows
 
@@ -120,7 +121,7 @@ class Indexer:
         return new_chunks
 
     def index_text(
-        self, doc_id: str, text: str, metadata: dict | None = None
+        self, doc_id: str, text: str, metadata: dict[str, Any] | None = None
     ) -> list[Chunk]:
         """Convenience helper to index a single text document."""
         return self.index([Document(id=doc_id, text=text, metadata=metadata or {})])

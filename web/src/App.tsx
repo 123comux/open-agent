@@ -3,7 +3,8 @@ import { ChatClient } from "./api/client";
 import { Chat } from "./components/Chat";
 import { Sidebar } from "./components/Sidebar";
 import { Settings } from "./components/Settings";
-import type { Message, Tool } from "./types";
+import { TraceDashboard } from "./components/TraceDashboard";
+import type { AgentSettings, AgentSettingsUpdate, Message, Tool } from "./types";
 
 function generateSessionId(): string {
   return `sess-${Math.random().toString(36).slice(2, 10)}`;
@@ -28,6 +29,9 @@ export default function App() {
   );
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<AgentSettings | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [view, setView] = useState<"chat" | "traces">("chat");
   const cancelRef = useRef<(() => void) | null>(null);
 
   const client = useMemo(() => new ChatClient(apiUrl), [apiUrl]);
@@ -73,6 +77,35 @@ export default function App() {
   useEffect(() => {
     refreshSessions();
   }, [refreshSessions, sessionId]);
+
+  // Fetch runtime settings when the client changes.
+  useEffect(() => {
+    let active = true;
+    setSettingsLoading(true);
+    client
+      .getSettings()
+      .then((s) => {
+        if (active) setSettings(s);
+      })
+      .catch(() => {
+        /* settings unavailable; Settings panel will use defaults */
+      })
+      .finally(() => {
+        if (active) setSettingsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [client]);
+
+  const handleSettingsSave = useCallback(
+    async (update: AgentSettingsUpdate) => {
+      await client.updateSettings(update);
+      const refreshed = await client.getSettings();
+      setSettings(refreshed);
+    },
+    [client]
+  );
 
   // Cleanup any active stream on unmount
   useEffect(() => {
@@ -132,6 +165,26 @@ export default function App() {
         });
     },
     [client, sessionId, handleNewSession]
+  );
+
+  const handleRenameSession = useCallback(
+    async (oldId: string, newId: string) => {
+      await client.renameSession(oldId, newId);
+      setSessions((prev) =>
+        prev.map((s) => (s === oldId ? newId : s))
+      );
+      if (oldId === sessionId) {
+        setSessionId(newId);
+      }
+    },
+    [client, sessionId]
+  );
+
+  const handleExportSession = useCallback(
+    async (id: string, fmt: "json" | "md") => {
+      await client.exportSession(id, fmt);
+    },
+    [client]
   );
 
   const handleSend = useCallback(
@@ -264,6 +317,7 @@ export default function App() {
   return (
     <div className="flex h-full w-full bg-[#0a0a0f] font-sans text-zinc-100">
       <Sidebar
+        client={client}
         tools={tools}
         loading={toolsLoading}
         healthy={healthy}
@@ -272,7 +326,8 @@ export default function App() {
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
         onDeleteSession={handleDeleteSession}
-        onUploadFile={async (file) => { await client.uploadFile(file); }}
+        onRenameSession={handleRenameSession}
+        onExportSession={handleExportSession}
       >
         <Settings
           apiUrl={apiUrl}
@@ -280,25 +335,49 @@ export default function App() {
           sessionId={sessionId}
           onRegenerateSession={() => setSessionId(generateSessionId())}
           healthy={healthy}
+          tools={tools}
+          settings={settings}
+          settingsLoading={settingsLoading}
+          onSettingsSave={handleSettingsSave}
         />
       </Sidebar>
       <main className="flex min-w-0 flex-1 flex-col">
-        <Chat
-          messages={messages}
-          loading={loading}
-          onSend={handleSend}
-          onStop={() => {
-            cancelRef.current?.();
-            cancelRef.current = null;
-            setLoading(false);
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.streaming ? { ...m, streaming: false } : m
-              )
-            );
-          }}
-          error={error}
-        />
+        <div className="flex items-center justify-end gap-2 border-b border-white/5 px-4 py-2">
+          {(["chat", "traces"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                view === v
+                  ? "bg-emerald-500/20 text-emerald-300"
+                  : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+              }`}
+            >
+              {v === "chat" ? "Chat" : "Traces"}
+            </button>
+          ))}
+        </div>
+        {view === "chat" ? (
+          <Chat
+            messages={messages}
+            loading={loading}
+            onSend={handleSend}
+            onStop={() => {
+              cancelRef.current?.();
+              cancelRef.current = null;
+              setLoading(false);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.streaming ? { ...m, streaming: false } : m
+                )
+              );
+            }}
+            error={error}
+          />
+        ) : (
+          <TraceDashboard client={client} />
+        )}
       </main>
     </div>
   );

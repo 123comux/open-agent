@@ -1,6 +1,6 @@
 # Open Agent
 
-[![CI](https://github.com/your-org/open-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/open-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/123comux/open-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/123comux/open-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://docs.astral.sh/ruff/)
@@ -20,12 +20,13 @@ framework-agnostic Python core that powers a Rich/Typer CLI, a FastAPI server
 ## Key Features
 
 - **Agentic RAG** — ReAct reasoning loop (`Thought → Action → Observation`)
-  grounded by vector retrieval over your own documents (ChromaDB).
+  grounded by vector retrieval over your own documents (FAISS, with optional ChromaDB support).
 - **Multi-tool** — Built-in tools (shell, Python interpreter, file I/O, web
-  search) plus a unified `ToolRegistry` for runtime registration.
+  search, headless browser) plus a unified `ToolRegistry` for runtime
+  registration.
 - **Multi-model** — A single `ModelInterface` supports OpenAI-compatible
-  endpoints, Anthropic Claude, and local Ollama. Switch providers with one env
-  var.
+  endpoints, Anthropic Claude, Zhipu AI, and local Ollama. Switch providers
+  with one env var or via the Web UI.
 - **MCP support** — Connect any MCP server (stdio or SSE) and its tools become
   first-class citizens alongside the built-ins.
 - **Multi-frontend delivery** — Use it as a CLI, a library, an HTTP/WebSocket
@@ -79,7 +80,7 @@ without FastAPI, React, or VS Code APIs.
 ### Install
 
 ```bash
-git clone https://github.com/your-org/open-agent.git
+git clone https://github.com/123comux/open-agent.git
 cd open-agent
 pip install -e ".[all]"
 ```
@@ -155,12 +156,18 @@ make serve
 
 Endpoints:
 
-| Method | Path          | Description                                   |
-|--------|---------------|-----------------------------------------------|
-| GET    | `/api/health` | Health check                                  |
-| GET    | `/api/tools`  | List available tools and their schemas        |
-| POST   | `/api/chat`   | Single message → `ChatResponse`               |
-| WS     | `/ws/chat`    | Streaming conversation over WebSocket         |
+| Method | Path                   | Description                                   |
+|--------|------------------------|-----------------------------------------------|
+| GET    | `/api/health`          | Health check                                  |
+| GET    | `/api/tools`           | List available tools and their schemas        |
+| GET    | `/api/settings`        | Get runtime settings                          |
+| POST   | `/api/settings`        | Update runtime settings and rebuild agent     |
+| GET    | `/api/sessions`        | List session IDs                              |
+| GET    | `/api/sessions/{id}`   | Get session history                           |
+| DELETE | `/api/sessions/{id}`   | Clear a session                               |
+| POST   | `/api/upload`          | Upload and index a document into a KB         |
+| POST   | `/api/chat`            | Single message → `ChatResponse`               |
+| WS     | `/ws/chat`             | Streaming conversation over WebSocket         |
 
 Example request:
 
@@ -211,6 +218,26 @@ by `open_agent.config.Settings`:
 | `OPEN_AGENT_SERVER_HOST`            | `127.0.0.1`                 | Bind host for the FastAPI server.                        |
 | `OPEN_AGENT_SERVER_PORT`            | `8000`                      | Bind port for the FastAPI server.                        |
 | `OPEN_AGENT_SHORT_TERM_MEMORY_SIZE` | `20`                        | Number of recent messages kept in short-term memory.     |
+| `OPEN_AGENT_EMBEDDING_MODEL`        | `BAAI/bge-small-zh-v1.5`    | Sentence-transformer model used for embeddings.          |
+| `OPEN_AGENT_CHUNK_SIZE`             | `500`                       | Chunk size for document splitting.                       |
+| `OPEN_AGENT_CHUNK_OVERLAP`          | `50`                        | Chunk overlap for document splitting.                    |
+| `OPEN_AGENT_SPLIT_UNIT`             | `char`                      | Split unit (`char` or `paragraph`).                          |
+| `OPEN_AGENT_RAG_TOP_K`              | `5`                         | Number of chunks retrieved per query.                    |
+| `OPEN_AGENT_RERANKER_MODEL`         | `BAAI/bge-reranker-v2-m3`   | Cross-encoder reranker model.                            |
+| `OPEN_AGENT_RERANK_K`               | `20`                        | Number of candidates fed to the reranker.                |
+| `OPEN_AGENT_MCP_SERVERS_FILE`       | `""`                        | Path to MCP servers JSON config.                         |
+| `OPEN_AGENT_ENABLED_TOOLS`          | `""`                        | Comma-separated tool names to enable (empty = all).      |
+| `OPEN_AGENT_ENABLE_LONG_TERM_MEMORY`| `false`                     | Enable vector-backed long-term memory.                   |
+| `OPEN_AGENT_LONG_TERM_MEMORY_DIR`   | `.open_agent_long_term`     | Storage directory for long-term memory.                  |
+| `OPEN_AGENT_LONG_TERM_MEMORY_TOP_K` | `3`                         | Number of long-term memories retrieved.                  |
+| `OPEN_AGENT_ENABLE_OBSERVABILITY`   | `true`                      | Enable trace/log collection.                             |
+| `OPEN_AGENT_OBSERVABILITY_PROVIDER` | `local`                     | One of `local`, `langsmith`, `langfuse`.                 |
+| `OPEN_AGENT_LANGSMITH_API_KEY`      | `""`                        | LangSmith personal API key.                              |
+| `OPEN_AGENT_LANGSMITH_API_URL`      | `https://api.smith.langchain.com` | LangSmith API endpoint.                            |
+| `OPEN_AGENT_LANGSMITH_PROJECT`      | `open-agent`                | LangSmith project name.                                  |
+| `OPEN_AGENT_LANGFUSE_PUBLIC_KEY`    | `""`                        | Langfuse public key.                                     |
+| `OPEN_AGENT_LANGFUSE_SECRET_KEY`    | `""`                        | Langfuse secret key.                                     |
+| `OPEN_AGENT_LANGFUSE_HOST`          | `https://cloud.langfuse.com`| Langfuse host URL.                                       |
 
 ## Development
 
@@ -242,8 +269,8 @@ open-agent/
 ├── README.md
 ├── LICENSE
 ├── .github/
-│   ├── workflows/ci.yml        # Matrix CI: ruff + mypy + pytest
-│   └── CONTRIBUTING.md
+│   └── workflows/ci.yml        # Matrix CI: ruff + mypy + pytest
+├── CONTRIBUTING.md
 ├── docs/
 │   └── superpowers/specs/      # Design documents
 ├── src/open_agent/             # Core library (no frontend deps)
@@ -277,7 +304,7 @@ open-agent/
 
 ## Contributing
 
-Contributions are welcome! Please read [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md)
+Contributions are welcome! Please read [`CONTRIBUTING.md`](CONTRIBUTING.md)
 for guidelines on setting up a dev environment, running tests, code style, and
 submitting pull requests.
 

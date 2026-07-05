@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Union
 
 from pydantic import BaseModel
 
 from open_agent.models.base import ModelResponse, ToolCall
+
+__all__ = ["DirectResponse", "ParsedPlan", "Planner", "ToolCall"]
 
 
 class DirectResponse(BaseModel):
@@ -25,7 +26,7 @@ class DirectResponse(BaseModel):
 # A parsed plan is either a direct response or a single tool call. When the
 # model requests multiple tool calls, only the first is returned here; the
 # remaining calls remain accessible via ``ModelResponse.tool_calls``.
-ParsedPlan = Union[DirectResponse, ToolCall]
+ParsedPlan = DirectResponse | ToolCall
 
 
 class Planner:
@@ -55,7 +56,11 @@ class Planner:
         if not content:
             return None
         # Fenced JSON block: ```json\n{...}\n``` (or bare ```).
-        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        # Greedy `{.*}` (with re.DOTALL) captures nested objects so a tool call
+        # like {"name":"x","arguments":{"a":{"b":1}}} is not truncated at the
+        # first inner closing brace. _try_json will reject the match if the
+        # captured span is not valid JSON.
+        fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.DOTALL)
         if fence_match:
             candidate = Planner._try_json(fence_match.group(1))
             if candidate is not None:

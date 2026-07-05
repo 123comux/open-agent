@@ -8,6 +8,8 @@ agent loop.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from open_agent.tools.base import Tool, ToolResult
 
 
@@ -38,7 +40,7 @@ class ToolRegistry:
         """Return the names of all registered tools."""
         return list(self._tools.keys())
 
-    def schemas(self) -> list[dict]:
+    def schemas(self) -> list[dict[str, Any]]:
         """Return JSON-schema descriptions for all registered tools."""
         return [tool.to_schema() for tool in self._tools.values()]
 

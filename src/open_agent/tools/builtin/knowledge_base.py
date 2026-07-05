@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from open_agent.rag.kb_manager import KBManager
 
 try:  # The RAG stack is optional at tool import time.
-    from open_agent.rag.kb_manager import KBManager  # type: ignore[no-redef]
+    from open_agent.rag.kb_manager import KBManager
 
     _HAS_KB_MANAGER = True
 except ImportError:  # pragma: no cover - depends on optional deps being present
@@ -73,7 +73,8 @@ class KnowledgeBaseTool(Tool):
                 "'open-agent index' command."
             )
 
-        top_k = int(kwargs.get("top_k", self.top_k))
+        top_k_raw = kwargs.get("top_k", self.top_k)
+        top_k = int(top_k_raw) if isinstance(top_k_raw, int) else self.top_k
         result: dict[str, Any] = await kb_manager.query(query, top_k=top_k)
         chunks: list[dict[str, Any]] = result.get("chunks", [])
         if not chunks:

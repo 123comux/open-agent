@@ -10,6 +10,7 @@ import asyncio
 import os
 
 from open_agent.tools.base import Tool
+from open_agent.tools.sandbox import check_path
 
 
 class FileTool(Tool):
@@ -47,6 +48,9 @@ class FileTool(Tool):
             return "Error: 'action' is required (read|write|list)."
         if not path:
             return "Error: 'path' is required."
+        blocked = check_path(path)
+        if blocked:
+            return blocked
         if action == "read":
             return await asyncio.to_thread(self._read, path)
         if action == "write":
@@ -59,7 +63,7 @@ class FileTool(Tool):
     @staticmethod
     def _read(path: str) -> str:
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 return fh.read()
         except FileNotFoundError:
             return f"Error: file not found: {path}"

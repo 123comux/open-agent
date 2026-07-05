@@ -1,23 +1,24 @@
 import * as vscode from 'vscode';
+import type { ChatResponse, Tool, ToolCallInfo } from '../../shared/types';
 import {
   chatWithBackend,
   getToolsFromBackend,
   healthCheckBackend,
-  type ChatResponse,
-  type Tool,
-} from './extension';
+  streamChatFromBackend,
+} from './apiClient';
 
 /**
  * Provides the Open Agent chat webview view hosted in the activity bar sidebar.
  *
  * The webview is a self-contained single-page app (inline HTML/CSS/JS) that
  * posts messages to this provider; the provider proxies the requests to the
- * Open Agent backend over HTTP (via the helpers in `extension.ts`) and
- * forwards the results back to the webview.
+ * Open Agent backend over HTTP/WebSocket (via the helpers in `extension.ts`)
+ * and forwards the results back to the webview.
  */
 export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private readonly sessionId: string;
+  private cancelStream?: () => void;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.sessionId = `vscode-${process.pid}-${Date.now()}`;
@@ -86,6 +87,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case 'chat':
         await this.handleChat(data.message ?? '');
         break;
+      case 'stopStream':
+        this.cancelStream?.();
+        this.cancelStream = undefined;
+        this.post({ type: 'streamStopped' });
+        break;
       case 'getTools':
         await this.handleGetTools();
         break;
@@ -99,20 +105,59 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   private async handleChat(message: string): Promise<void> {
     if (!message.trim()) return;
-    this.post({ type: 'loading', loading: true });
-    try {
-      const result: ChatResponse = await chatWithBackend(
-        this.getApiUrl(),
-        message,
-        this.sessionId
-      );
-      this.post({ type: 'chatResponse', result });
-    } catch (err) {
-      const errorText = err instanceof Error ? err.message : String(err);
-      this.post({ type: 'chatError', error: errorText });
-    } finally {
-      this.post({ type: 'loading', loading: false });
-    }
+    this.post({ type: 'streamStart' });
+
+    let fallback = true;
+    this.cancelStream = streamChatFromBackend(
+      this.getApiUrl(),
+      message,
+      this.sessionId,
+      {
+        onStart: () => {
+          fallback = false;
+        },
+        onToken: (content) => {
+          fallback = false;
+          this.post({ type: 'token', content });
+        },
+        onThought: (content, step) => {
+          fallback = false;
+          this.post({ type: 'thought', content, step });
+        },
+        onToolStart: (name, arguments: Record<string, unknown>) => {
+          fallback = false;
+          this.post({ type: 'toolStart', name, arguments });
+        },
+        onToolEnd: (name, observation, is_error) => {
+          fallback = false;
+          this.post({ type: 'toolEnd', name, observation, is_error });
+        },
+        onDone: (response, steps, tool_calls_made) => {
+          fallback = false;
+          this.post({ type: 'streamDone', response, steps, tool_calls_made });
+          this.cancelStream = undefined;
+        },
+        onError: async (error) => {
+          this.cancelStream = undefined;
+          if (fallback) {
+            // WebSocket unavailable; fall back to plain HTTP chat.
+            try {
+              const result = await chatWithBackend(
+                this.getApiUrl(),
+                message,
+                this.sessionId
+              );
+              this.post({ type: 'streamDone', ...result, tool_calls_made: result.tool_calls_made });
+            } catch (err) {
+              const errorText = err instanceof Error ? err.message : String(err);
+              this.post({ type: 'streamError', error: errorText });
+            }
+          } else {
+            this.post({ type: 'streamError', error });
+          }
+        },
+      }
+    );
   }
 
   private async handleGetTools(): Promise<void> {
@@ -226,6 +271,36 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     letter-spacing: 0.5px;
   }
   .meta { font-size: 10px; color: var(--fg-muted); margin: 4px 4px 0; }
+  .thinking {
+    width: 100%;
+    margin-top: 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--tool-bg);
+  }
+  .thinking summary {
+    cursor: pointer;
+    padding: 4px 8px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    list-style: none;
+  }
+  .thinking summary::-webkit-details-marker { display: none; }
+  .thinking summary::before { content: "\\25B6"; font-size: 8px; margin-right: 6px; transition: transform .15s; }
+  .thinking[open] summary::before { transform: rotate(90deg); }
+  .thinking-list {
+    padding: 0 8px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .thinking-item {
+    font-size: 11px;
+    color: var(--fg-muted);
+    display: flex;
+    gap: 6px;
+  }
+  .thinking-item::before { content: "\\2192"; color: var(--success); }
   .tool-calls { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; width: 100%; }
   details.tool {
     background: var(--tool-bg);
@@ -319,9 +394,15 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     cursor: pointer;
     font-weight: 600;
     height: 36px;
+    min-width: 64px;
   }
   #send:hover { background: var(--accent-hover); }
   #send:disabled { background: #3a3a3a; color: var(--fg-muted); cursor: not-allowed; }
+  #send.stop {
+    background: var(--error);
+    color: #fff;
+  }
+  #send.stop:hover { background: #d96c5a; }
   .empty { color: var(--fg-muted); text-align: center; margin-top: 40px; font-size: 12px; padding: 0 20px; }
   .empty h2 { color: var(--fg); font-size: 14px; margin: 0 0 8px; }
   #messages::-webkit-scrollbar { width: 10px; }
@@ -365,6 +446,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   const clearBtn = document.getElementById('clear-btn');
   let emptyEl = document.getElementById('empty');
   let busy = false;
+  let currentAssistant = null;
+  let currentToolCalls = [];
+  let currentThoughts = [];
 
   function escapeHtml(s) {
     return String(s)
@@ -380,9 +464,17 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
   function setBusy(b) {
     busy = b;
-    sendBtn.disabled = b;
     loadingEl.classList.toggle('show', b);
-    if (b) { errorEl.classList.remove('show'); }
+    if (b) {
+      errorEl.classList.remove('show');
+      sendBtn.textContent = 'Stop';
+      sendBtn.classList.add('stop');
+      sendBtn.disabled = false;
+    } else {
+      sendBtn.textContent = 'Send';
+      sendBtn.classList.remove('stop');
+      sendBtn.disabled = !inputEl.value.trim();
+    }
   }
   function removeEmpty() {
     if (emptyEl && emptyEl.parentNode) { emptyEl.parentNode.removeChild(emptyEl); }
@@ -394,72 +486,162 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     messagesEl.innerHTML = '';
     messagesEl.appendChild(e);
     emptyEl = e;
+    currentAssistant = null;
+    currentToolCalls = [];
+    currentThoughts = [];
   }
-  function addMessage(role, content, opts) {
-    opts = opts || {};
+  function addUserMessage(content) {
     removeEmpty();
     const wrap = document.createElement('div');
-    wrap.className = 'msg ' + role;
-
+    wrap.className = 'msg user';
     const roleLabel = document.createElement('div');
     roleLabel.className = 'role';
-    roleLabel.textContent = role === 'user' ? 'You' : 'Assistant';
+    roleLabel.textContent = 'You';
     wrap.appendChild(roleLabel);
-
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.textContent = content;
     wrap.appendChild(bubble);
-
-    if (role === 'assistant') {
-      if (typeof opts.steps === 'number') {
-        const meta = document.createElement('div');
-        meta.className = 'meta';
-        meta.textContent = opts.steps + ' step' + (opts.steps === 1 ? '' : 's');
-        wrap.appendChild(meta);
-      }
-      if (Array.isArray(opts.toolCalls) && opts.toolCalls.length) {
-        const tc = document.createElement('div');
-        tc.className = 'tool-calls';
-        opts.toolCalls.forEach(function (call) {
-          const det = document.createElement('details');
-          det.className = 'tool' + (call.is_error ? ' tool-error' : '');
-          const sum = document.createElement('summary');
-          const stepSpan = document.createElement('span');
-          stepSpan.className = 'tool-step';
-          stepSpan.textContent = '#' + (call.step != null ? call.step : '?');
-          const nameSpan = document.createElement('span');
-          nameSpan.className = 'tool-name';
-          nameSpan.textContent = call.name || 'tool';
-          const status = document.createElement('span');
-          status.className = 'tool-step';
-          status.textContent = call.is_error ? '· error' : '· ok';
-          sum.appendChild(stepSpan);
-          sum.appendChild(nameSpan);
-          sum.appendChild(status);
-          det.appendChild(sum);
-
-          const body = document.createElement('div');
-          body.className = 'tool-body';
-          const argLabel = document.createElement('div');
-          argLabel.className = 'tool-label';
-          argLabel.textContent = 'Arguments';
-          const argPre = document.createElement('pre');
-          argPre.textContent = fmtJson(call.arguments);
-          const obsLabel = document.createElement('div');
-          obsLabel.className = 'tool-label';
-          obsLabel.textContent = 'Observation';
-          const obsPre = document.createElement('pre');
-          obsPre.textContent = call.observation != null ? String(call.observation) : '';
-          body.appendChild(argLabel); body.appendChild(argPre);
-          body.appendChild(obsLabel); body.appendChild(obsPre);
-          det.appendChild(body);
-          tc.appendChild(det);
-        });
-        wrap.appendChild(tc);
-      }
-    }
     messagesEl.appendChild(wrap);
+    scrollBottom();
+  }
+  function startAssistantMessage() {
+    removeEmpty();
+    currentAssistant = { wrap: document.createElement('div'), bubble: document.createElement('div'), meta: null, toolCallsEl: null, thinkingEl: null };
+    currentAssistant.wrap.className = 'msg assistant';
+    const roleLabel = document.createElement('div');
+    roleLabel.className = 'role';
+    roleLabel.textContent = 'Assistant';
+    currentAssistant.wrap.appendChild(roleLabel);
+    currentAssistant.bubble.className = 'bubble';
+    currentAssistant.wrap.appendChild(currentAssistant.bubble);
+    messagesEl.appendChild(currentAssistant.wrap);
+    currentToolCalls = [];
+    currentThoughts = [];
+    scrollBottom();
+  }
+  function appendToken(content) {
+    if (!currentAssistant) startAssistantMessage();
+    currentAssistant.bubble.textContent += content;
+    scrollBottom();
+  }
+  function renderThinking() {
+    if (!currentAssistant || currentThoughts.length === 0) return;
+    if (!currentAssistant.thinkingEl) {
+      currentAssistant.thinkingEl = document.createElement('details');
+      currentAssistant.thinkingEl.className = 'thinking';
+      const sum = document.createElement('summary');
+      sum.textContent = 'Thinking Chain';
+      currentAssistant.thinkingEl.appendChild(sum);
+      const list = document.createElement('div');
+      list.className = 'thinking-list';
+      currentAssistant.thinkingEl.appendChild(list);
+      currentAssistant.wrap.appendChild(currentAssistant.thinkingEl);
+    }
+    const list = currentAssistant.thinkingEl.querySelector('.thinking-list');
+    list.innerHTML = '';
+    currentThoughts.forEach(function (t) {
+      const item = document.createElement('div');
+      item.className = 'thinking-item';
+      item.textContent = t;
+      list.appendChild(item);
+    });
+    currentAssistant.thinkingEl.open = true;
+    scrollBottom();
+  }
+  function addThought(content, step) {
+    if (!currentAssistant) startAssistantMessage();
+    currentThoughts.push('[' + (step || currentThoughts.length + 1) + '] ' + content);
+    renderThinking();
+  }
+  function ensureToolCalls() {
+    if (!currentAssistant.toolCallsEl) {
+      currentAssistant.toolCallsEl = document.createElement('div');
+      currentAssistant.toolCallsEl.className = 'tool-calls';
+      currentAssistant.wrap.appendChild(currentAssistant.toolCallsEl);
+    }
+    return currentAssistant.toolCallsEl;
+  }
+  function startTool(name, args) {
+    if (!currentAssistant) startAssistantMessage();
+    currentToolCalls.push({ name: name || 'tool', arguments: args || {}, observation: '', is_error: false, el: null });
+    renderToolCalls();
+  }
+  function endTool(name, observation, isError) {
+    const call = currentToolCalls.slice().reverse().find(function (c) { return c.name === name && c.observation === ''; });
+    if (call) {
+      call.observation = observation != null ? String(observation) : '';
+      call.is_error = !!isError;
+    }
+    renderToolCalls();
+  }
+  function renderToolCalls() {
+    const container = ensureToolCalls();
+    container.innerHTML = '';
+    currentToolCalls.forEach(function (call, idx) {
+      const det = document.createElement('details');
+      det.className = 'tool' + (call.is_error ? ' tool-error' : '');
+      det.open = call.observation === '';
+      const sum = document.createElement('summary');
+      const stepSpan = document.createElement('span');
+      stepSpan.className = 'tool-step';
+      stepSpan.textContent = '#' + (idx + 1);
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'tool-name';
+      nameSpan.textContent = call.name;
+      const status = document.createElement('span');
+      status.className = 'tool-step';
+      status.textContent = call.observation === '' ? '· running' : (call.is_error ? '· error' : '· ok');
+      sum.appendChild(stepSpan);
+      sum.appendChild(nameSpan);
+      sum.appendChild(status);
+      det.appendChild(sum);
+
+      const body = document.createElement('div');
+      body.className = 'tool-body';
+      const argLabel = document.createElement('div');
+      argLabel.className = 'tool-label';
+      argLabel.textContent = 'Arguments';
+      const argPre = document.createElement('pre');
+      argPre.textContent = fmtJson(call.arguments);
+      body.appendChild(argLabel); body.appendChild(argPre);
+
+      if (call.observation !== '') {
+        const obsLabel = document.createElement('div');
+        obsLabel.className = 'tool-label';
+        obsLabel.textContent = 'Observation';
+        const obsPre = document.createElement('pre');
+        obsPre.textContent = call.observation;
+        body.appendChild(obsLabel); body.appendChild(obsPre);
+      }
+      det.appendChild(body);
+      container.appendChild(det);
+    });
+    scrollBottom();
+  }
+  function finalizeAssistant(response, steps, toolCalls) {
+    if (!currentAssistant) startAssistantMessage();
+    currentAssistant.bubble.textContent = response || '';
+    if (typeof steps === 'number' && steps > 0) {
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = steps + ' step' + (steps === 1 ? '' : 's');
+      currentAssistant.wrap.appendChild(meta);
+    }
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+      currentToolCalls = toolCalls.map(function (c, i) {
+        return {
+          name: c.name || 'tool',
+          arguments: c.arguments || {},
+          observation: c.observation != null ? String(c.observation) : '',
+          is_error: !!c.is_error
+        };
+      });
+      renderToolCalls();
+    }
+    currentAssistant = null;
+    currentToolCalls = [];
+    currentThoughts = [];
     scrollBottom();
   }
   function showError(msg) {
@@ -468,8 +650,12 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   }
   function send() {
     const text = inputEl.value.trim();
-    if (!text || busy) return;
-    addMessage('user', text);
+    if (busy) {
+      vscode.postMessage({ type: 'stopStream' });
+      return;
+    }
+    if (!text) return;
+    addUserMessage(text);
     inputEl.value = '';
     autoGrow();
     setBusy(true);
@@ -484,14 +670,21 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       return '• ' + escapeHtml(t.name || 'unknown') + ' — ' + escapeHtml(t.description || '');
     });
     const body = lines.length ? lines.join('\\n') : 'No tools available.';
-    addMessage('assistant', 'Available tools:\\n\\n' + body, {});
+    addUserMessage('');
+    startAssistantMessage();
+    currentAssistant.bubble.textContent = 'Available tools:\\n\\n' + body;
+    currentAssistant = null;
+    scrollBottom();
   }
 
   sendBtn.addEventListener('click', send);
   inputEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
-  inputEl.addEventListener('input', autoGrow);
+  inputEl.addEventListener('input', function () {
+    autoGrow();
+    if (!busy) { sendBtn.disabled = !inputEl.value.trim(); }
+  });
   toolsBtn.addEventListener('click', function () { vscode.postMessage({ type: 'getTools' }); });
   clearBtn.addEventListener('click', function () {
     showEmpty();
@@ -508,16 +701,35 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         if (msg.ok) { healthEl.textContent = 'online'; healthEl.className = 'health ok'; }
         else { healthEl.textContent = 'offline'; healthEl.className = 'health err'; }
         break;
-      case 'loading':
-        setBusy(!!msg.loading);
+      case 'streamStart':
+        setBusy(true);
         break;
+      case 'token':
+        appendToken(msg.content || '');
+        break;
+      case 'thought':
+        addThought(msg.content || '', msg.step);
+        break;
+      case 'toolStart':
+        startTool(msg.name, msg.arguments);
+        break;
+      case 'toolEnd':
+        endTool(msg.name, msg.observation, msg.is_error);
+        break;
+      case 'streamDone':
       case 'chatResponse':
         setBusy(false);
-        addMessage('assistant', (msg.result && msg.result.response) || '(empty response)', {
-          steps: msg.result ? msg.result.steps : undefined,
-          toolCalls: msg.result ? msg.result.tool_calls_made : []
-        });
+        finalizeAssistant(msg.response || (msg.result && msg.result.response), msg.steps || (msg.result && msg.result.steps), msg.tool_calls_made || (msg.result && msg.result.tool_calls_made));
         break;
+      case 'streamStopped':
+        setBusy(false);
+        if (currentAssistant) {
+          currentAssistant = null;
+          currentToolCalls = [];
+          currentThoughts = [];
+        }
+        break;
+      case 'streamError':
       case 'chatError':
         setBusy(false);
         showError(msg.error || 'Unknown error');

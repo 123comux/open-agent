@@ -81,34 +81,54 @@ def load_markdown(file_path: str) -> LoadedDocument:
 
 
 def load_pdf(file_path: str) -> LoadedDocument:
-    """Load a PDF file using PyMuPDF (fitz)."""
+    """Load a PDF file using PyMuPDF (fitz).
+
+    Preserves page boundaries and extracts tables when PyMuPDF supports it.
+    Falls back to PyPDF2 if PyMuPDF is not installed.
+    """
     try:
         import fitz  # type: ignore[import-untyped]  # PyMuPDF
     except ImportError:
-        try:
-            from PyPDF2 import PdfReader  # type: ignore[import-not-found]
-            reader = PdfReader(file_path)
-            text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-            path = Path(file_path)
-            return LoadedDocument(
-                id=path.stem,
-                text=text,
-                metadata={"source": file_path, "file_type": "pdf", "pages": len(reader.pages)},
-                source=file_path,
-                file_type="pdf",
-            )
-        except ImportError:
-            raise ImportError(
-                "PDF loading requires PyMuPDF (pip install pymupdf) or PyPDF2 (pip install pypdf2)."
-            )
+        return _load_pdf_with_pypdf2(file_path)
 
     doc = fitz.open(file_path)
-    text = "\n\n".join(page.get_text() for page in doc)
     path = Path(file_path)
+
+    pages_text: list[str] = []
+    tables: list[list[list[str]]] = []
+    for page_num, page in enumerate(doc, start=1):
+        page_text = page.get_text().strip()
+        # Try to extract tables from the page.
+        try:
+            tab = page.find_tables()
+            if tab and tab.tables:
+                for table in tab.tables:
+                    rows = table.extract()
+                    if rows:
+                        tables.append(rows)
+                        # Append a textual representation of the table.
+                        lines = [" | ".join(str(cell) for cell in row) for row in rows]
+                        page_text += "\n\n[Table]\n" + "\n".join(lines)
+        except Exception:
+            # Table extraction may not be available in older PyMuPDF versions.
+            pass
+
+        if page_text:
+            pages_text.append(f"--- Page {page_num} ---\n\n{page_text}")
+
+    text = "\n\n".join(pages_text)
+    metadata = {
+        "source": file_path,
+        "file_type": "pdf",
+        "pages": doc.page_count,
+        "title": doc.metadata.get("title") if doc.metadata else None,
+        "author": doc.metadata.get("author") if doc.metadata else None,
+        "tables": len(tables),
+    }
     result = LoadedDocument(
         id=path.stem,
         text=text,
-        metadata={"source": file_path, "file_type": "pdf", "pages": doc.page_count},
+        metadata={k: v for k, v in metadata.items() if v is not None},
         source=file_path,
         file_type="pdf",
     )
@@ -116,8 +136,37 @@ def load_pdf(file_path: str) -> LoadedDocument:
     return result
 
 
+def _load_pdf_with_pypdf2(file_path: str) -> LoadedDocument:
+    """Fallback PDF loader using PyPDF2."""
+    try:
+        from PyPDF2 import PdfReader  # type: ignore[import-not-found]
+    except ImportError:
+        raise ImportError(
+            "PDF loading requires PyMuPDF (pip install pymupdf) or PyPDF2 (pip install pypdf2)."
+        )
+
+    reader = PdfReader(file_path)
+    pages_text = []
+    for page_num, page in enumerate(reader.pages, start=1):
+        page_text = (page.extract_text() or "").strip()
+        if page_text:
+            pages_text.append(f"--- Page {page_num} ---\n\n{page_text}")
+    text = "\n\n".join(pages_text)
+    path = Path(file_path)
+    return LoadedDocument(
+        id=path.stem,
+        text=text,
+        metadata={"source": file_path, "file_type": "pdf", "pages": len(reader.pages)},
+        source=file_path,
+        file_type="pdf",
+    )
+
+
 def load_docx(file_path: str) -> LoadedDocument:
-    """Load a DOCX file using python-docx."""
+    """Load a DOCX file using python-docx.
+
+    Preserves headings, extracts tables, and records document properties.
+    """
     try:
         import docx
     except ImportError:
@@ -126,13 +175,63 @@ def load_docx(file_path: str) -> LoadedDocument:
         )
 
     doc = docx.Document(file_path)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    text = "\n\n".join(paragraphs)
     path = Path(file_path)
+
+    # Extract paragraphs with heading markers.
+    paragraphs: list[str] = []
+    headings: list[dict[str, Any]] = []
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            continue
+        style_obj = para.style
+        style = style_obj.name if style_obj is not None else "Normal"
+        if style.startswith("Heading"):
+            level = (
+                int(style.replace("Heading ", ""))
+                if style.replace("Heading ", "").isdigit()
+                else 1
+            )
+            marker = "#" * level
+            paragraphs.append(f"{marker} {text}")
+            headings.append({"level": level, "text": text})
+        else:
+            paragraphs.append(text)
+
+    # Extract tables as text blocks.
+    tables: list[list[list[str]]] = []
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            rows.append(cells)
+        if rows:
+            tables.append(rows)
+            lines = [" | ".join(cells) for cells in rows]
+            paragraphs.append("[Table]\n" + "\n".join(lines))
+
+    text = "\n\n".join(paragraphs)
+
+    # Document core properties (title, author, etc.).
+    props = doc.core_properties
+    metadata: dict[str, Any] = {
+        "source": file_path,
+        "file_type": "docx",
+        "paragraphs": len(doc.paragraphs),
+        "headings": len(headings),
+        "tables": len(tables),
+    }
+    if props.title:
+        metadata["title"] = props.title
+    if props.author:
+        metadata["author"] = props.author
+    if headings:
+        metadata["heading_titles"] = [h["text"] for h in headings[:20]]
+
     return LoadedDocument(
         id=path.stem,
         text=text,
-        metadata={"source": file_path, "file_type": "docx", "paragraphs": len(paragraphs)},
+        metadata=metadata,
         source=file_path,
         file_type="docx",
     )

@@ -13,10 +13,9 @@ except ImportError as exc:  # pragma: no cover
         "pip install numpy"
     ) from exc
 
-from open_agent.rag.reranker import build_reranker
-
 from open_agent.rag.hybrid_retriever import HybridRetriever
 from open_agent.rag.indexer import Indexer
+from open_agent.rag.reranker import build_reranker
 from open_agent.rag.stores.faiss_store import FAISSStore
 
 
@@ -72,7 +71,7 @@ class KnowledgeBase:
         self._routing_embedding: np.ndarray[Any, np.dtype[Any]] | None = None
 
     async def add_documents(
-        self, texts: list[str], metadatas: list[dict] | None = None
+        self, texts: list[str], metadatas: list[dict[str, Any]] | None = None
     ) -> None:
         """Chunk and index ``texts`` into this knowledge base."""
         if not texts:
@@ -110,6 +109,34 @@ class KnowledgeBase:
     async def count(self) -> int:
         """Return the number of indexed chunks in this knowledge base."""
         return await self._store.count()
+
+    def list_documents(self) -> list[dict[str, Any]]:
+        """Return unique documents indexed in this knowledge base.
+
+        Documents are grouped by their ``source`` metadata field. The returned
+        list contains dicts with ``source`` and ``chunks`` (number of chunks).
+        """
+        sources: dict[str, int] = {}
+        for meta in self._store._metadatas:
+            source = str(meta.get("source", "unknown"))
+            sources[source] = sources.get(source, 0) + 1
+        return [
+            {"source": source, "chunks": count}
+            for source, count in sorted(sources.items())
+        ]
+
+    async def delete_by_source(self, source: str) -> int:
+        """Delete all chunks whose ``source`` metadata matches ``source``.
+
+        Returns the number of chunks removed.
+        """
+        ids_to_delete = [
+            doc_id
+            for doc_id, meta in zip(self._store._ids, self._store._metadatas)
+            if str(meta.get("source", "")) == source
+        ]
+        await self._store.delete(ids_to_delete)
+        return len(ids_to_delete)
 
     async def embed_texts(
         self, texts: list[str]

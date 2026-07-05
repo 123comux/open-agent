@@ -13,35 +13,38 @@ __all__ = [
 
 # Optional imports requiring faiss/sentence-transformers
 try:
-    from open_agent.rag.stores.faiss_store import FAISSStore
+    from open_agent.rag.stores.faiss_store import FAISSStore  # noqa: F401
 
     __all__.append("FAISSStore")
 except ImportError:
     pass
 
 try:
-    from open_agent.rag.hybrid_retriever import HybridRetriever
+    from open_agent.rag.hybrid_retriever import HybridRetriever  # noqa: F401
 
     __all__.append("HybridRetriever")
 except ImportError:
     pass
 
 try:
-    from open_agent.rag.kb_router import KnowledgeBase, KnowledgeBaseRouter
+    from open_agent.rag.kb_router import (  # noqa: F401
+        KnowledgeBase,
+        KnowledgeBaseRouter,
+    )
 
     __all__.extend(["KnowledgeBase", "KnowledgeBaseRouter"])
 except ImportError:
     pass
 
 try:
-    from open_agent.rag.kb_manager import KBManager
+    from open_agent.rag.kb_manager import KBManager  # noqa: F401
 
     __all__.append("KBManager")
 except ImportError:
     pass
 
 try:
-    from open_agent.rag.evaluation import RAGEvaluator, RAGTestCase
+    from open_agent.rag.evaluation import RAGEvaluator, RAGTestCase  # noqa: F401
 
     __all__.extend(["RAGEvaluator", "RAGTestCase"])
 except ImportError:

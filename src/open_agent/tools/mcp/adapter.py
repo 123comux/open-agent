@@ -27,16 +27,21 @@ class MCPToolAdapter(Tool):
         client: MCPClient,
         tool_name: str,
         tool_description: str,
-        tool_schema: dict,
+        tool_schema: dict[str, Any],
+        server_name: str = "",
     ) -> None:
         self._client = client
-        self.name = tool_name
+        # Retain the original tool name for forwarding calls to the MCP server.
+        self._original_name = tool_name
+        # Prefix the registered name with the server name to avoid collisions
+        # when multiple MCP servers expose tools with the same name.
+        self.name = f"{server_name}__{tool_name}" if server_name else tool_name
         self.description = tool_description
         self.parameters = tool_schema
 
     async def execute(self, **kwargs: object) -> str:
         """Delegate execution to the MCP server via the owning client."""
-        return await self._client.call_tool(self.name, kwargs)
+        return await self._client.call_tool(self._original_name, kwargs)
 
 
 class MCPToolRegistry:
@@ -68,6 +73,7 @@ class MCPToolRegistry:
                 tool_name=tool.get("name", ""),
                 tool_description=tool.get("description", ""),
                 tool_schema=tool.get("inputSchema", {}),
+                server_name=name,
             )
             self._tools.append(adapter)
 

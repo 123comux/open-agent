@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -25,14 +26,14 @@ class ToolSchema(BaseModel):
 
     name: str
     description: str
-    parameters: dict
+    parameters: dict[str, Any]
 
 
 class ToolCall(BaseModel):
     """A parsed tool call requested by the model."""
 
     name: str
-    arguments: dict
+    arguments: dict[str, Any]
 
 
 class ModelResponse(BaseModel):

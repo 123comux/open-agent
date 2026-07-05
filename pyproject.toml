@@ -32,6 +32,7 @@ dependencies = [
     "langchain-community>=0.3",
     "langgraph>=0.2",
     "faiss-cpu>=1.7",
+    "rank-bm25>=0.2",
     "sentence-transformers>=3.0",
 ]
 
@@ -53,6 +54,13 @@ server = [
 mcp = [
     "mcp>=1.0.0",
 ]
+browser = [
+    "playwright>=1.40",
+]
+observability = [
+    "langsmith>=0.1.0",
+    "langfuse>=2.0",
+]
 all = [
     "chromadb>=0.5",
     "pymupdf>=1.24",
@@ -61,6 +69,9 @@ all = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.12",
     "mcp>=1.0.0",
+    "playwright>=1.40",
+    "langsmith>=0.1.0",
+    "langfuse>=2.0",
 ]
 dev = [
     "pytest>=8.0",

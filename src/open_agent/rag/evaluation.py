@@ -24,10 +24,18 @@ from pydantic import BaseModel, Field
 class EvaluationResult(BaseModel):
     """Result of evaluating a single RAG response."""
 
-    faithfulness: float = Field(ge=0.0, le=1.0, description="Is the answer grounded in the context?")
-    answer_relevance: float = Field(ge=0.0, le=1.0, description="Does the answer address the question?")
-    context_recall: float = Field(ge=0.0, le=1.0, description="Did retrieval find all relevant info?")
-    context_precision: float = Field(ge=0.0, le=1.0, description="Were retrieved chunks relevant?")
+    faithfulness: float = Field(
+        ge=0.0, le=1.0, description="Is the answer grounded in the context?"
+    )
+    answer_relevance: float = Field(
+        ge=0.0, le=1.0, description="Does the answer address the question?"
+    )
+    context_recall: float = Field(
+        ge=0.0, le=1.0, description="Did retrieval find all relevant info?"
+    )
+    context_precision: float = Field(
+        ge=0.0, le=1.0, description="Were retrieved chunks relevant?"
+    )
     overall_score: float = Field(ge=0.0, le=1.0, description="Harmonic mean of the above.")
     explanation: str = ""
     details: dict[str, Any] = Field(default_factory=dict)
@@ -51,7 +59,7 @@ class RAGEvaluator:
             When None, falls back to heuristic (text overlap) metrics.
     """
 
-    def __init__(self, model=None) -> None:
+    def __init__(self, model: Any = None) -> None:
         self.model = model
 
     async def evaluate(self, test_case: RAGTestCase) -> EvaluationResult:
@@ -200,7 +208,12 @@ class RAGEvaluator:
         if not q_words:
             return 0.0
         # Remove common stop words
-        stop_words = {"the", "a", "an", "is", "are", "was", "were", "what", "how", "why", "when", "where", "who", "do", "does", "did", "can", "could", "would", "should", "will", "to", "of", "in", "on", "at", "for", "with", "and", "or", "not"}
+        stop_words = {
+            "the", "a", "an", "is", "are", "was", "were", "what", "how", "why",
+            "when", "where", "who", "do", "does", "did", "can", "could", "would",
+            "should", "will", "to", "of", "in", "on", "at", "for", "with", "and",
+            "or", "not",
+        }
         q_words -= stop_words
         a_words -= stop_words
         if not q_words:
@@ -225,7 +238,12 @@ class RAGEvaluator:
         if not tc.retrieved_contexts:
             return 0.0
         q_words = set(tc.question.lower().split())
-        stop_words = {"the", "a", "an", "is", "are", "was", "were", "what", "how", "why", "when", "where", "who", "do", "does", "did", "can", "could", "would", "should", "will", "to", "of", "in", "on", "at", "for", "with", "and", "or", "not"}
+        stop_words = {
+            "the", "a", "an", "is", "are", "was", "were", "what", "how", "why",
+            "when", "where", "who", "do", "does", "did", "can", "could", "would",
+            "should", "will", "to", "of", "in", "on", "at", "for", "with", "and",
+            "or", "not",
+        }
         q_words -= stop_words
         if not q_words:
             return 0.5

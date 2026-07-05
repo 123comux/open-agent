@@ -17,6 +17,58 @@ import io
 from typing import Any
 
 from open_agent.tools.base import Tool
+from open_agent.tools.sandbox import check_python, sandbox_enabled
+
+
+def _safe_builtins() -> dict[str, Any]:
+    """Return a whitelist of safe builtin functions for sandboxed execution.
+
+    Dangerous builtins such as ``__import__``, ``open``, ``eval``, ``exec``,
+    ``compile``, ``globals``, ``locals`` and ``vars`` are deliberately excluded
+    so sandboxed code cannot escape the namespace to reach the filesystem, the
+    import system, or arbitrary code execution.
+    """
+    safe_names = {
+        # Constants
+        "True", "False", "None",
+        # Type conversion
+        "bool", "bytearray", "bytes", "complex", "dict", "float", "frozenset",
+        "int", "list", "set", "str", "tuple", "type",
+        # Numeric
+        "abs", "bin", "divmod", "hex", "oct", "ord", "pow", "round", "sum",
+        # Iteration
+        "enumerate", "filter", "iter", "map", "next", "range", "reversed", "zip",
+        # Logic
+        "all", "any",
+        # Comparison
+        "max", "min",
+        # Object
+        "callable", "classmethod", "delattr", "getattr", "hasattr", "hash",
+        "id", "isinstance", "issubclass", "object", "property", "repr",
+        "setattr", "slice", "staticmethod", "super",
+        # String
+        "ascii", "chr", "format",
+        # Sorting
+        "sorted",
+        # I/O (safe)
+        "print",
+        # Memory
+        "memoryview",
+        # Exceptions
+        "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+        "AttributeError", "RuntimeError", "StopIteration", "NotImplementedError",
+        "ZeroDivisionError", "ArithmeticError", "LookupError", "OverflowError",
+        "FileNotFoundError", "NameError", "OSError", "BufferError",
+        "BlockingIOError", "ChildProcessError", "ConnectionError",
+        "BrokenPipeError", "ConnectionAbortedError", "ConnectionRefusedError",
+        "ConnectionResetError", "InterruptedError", "IsADirectoryError",
+        "NotADirectoryError", "PermissionError", "ProcessLookupError",
+        "TimeoutError", "EOFError", "ImportError", "ModuleNotFoundError",
+        "RecursionError", "ReferenceError", "SystemError", "TabError",
+        "UnboundLocalError", "UnicodeError", "UnicodeDecodeError",
+        "UnicodeEncodeError", "UnicodeTranslateError",
+    }
+    return {name: getattr(builtins, name) for name in safe_names if hasattr(builtins, name)}
 
 
 class PythonTool(Tool):
@@ -43,11 +95,15 @@ class PythonTool(Tool):
         "required": ["code"],
     }
 
-    def _run_sync(self, code: str) -> str:
+    def _run_sync(self, code: str, sandbox: bool = False) -> str:
         buffer = io.StringIO()
+        # When the sandbox is enabled, restrict builtins to a safe whitelist so
+        # the executed code cannot import modules, open files, or call
+        # eval/exec. When disabled, full builtins are available.
+        builtin_ns = _safe_builtins() if sandbox else vars(builtins)
         globals_ns: dict[str, Any] = {
             "__name__": "__python_tool__",
-            "__builtins__": vars(builtins),
+            "__builtins__": builtin_ns,
         }
         locals_ns: dict[str, Any] = {}
         with contextlib.redirect_stdout(buffer):
@@ -63,7 +119,11 @@ class PythonTool(Tool):
                     lines = code.rstrip().split("\n")
                     # Check if the last non-empty line is an expression
                     last_line = lines[-1].strip() if lines else ""
-                    if last_line and not last_line.endswith((":", "=")) and "import" not in last_line:
+                    if (
+                        last_line
+                        and not last_line.endswith((":", "="))
+                        and "import" not in last_line
+                    ):
                         # Split: exec everything before, eval the last line
                         prefix = "\n".join(lines[:-1])
                         if prefix.strip():
@@ -84,10 +144,15 @@ class PythonTool(Tool):
         code = str(kwargs.get("code", ""))
         if not code:
             return "Error: no code provided."
-        timeout = float(kwargs.get("timeout", 10))
+        blocked = check_python(code)
+        if blocked:
+            return blocked
+        timeout_raw = kwargs.get("timeout", 10)
+        timeout = float(timeout_raw) if isinstance(timeout_raw, (int, float, str)) else 10.0
+        sandbox = sandbox_enabled()
         try:
             result = await asyncio.wait_for(
-                asyncio.to_thread(self._run_sync, code), timeout=timeout
+                asyncio.to_thread(self._run_sync, code, sandbox), timeout=timeout
             )
         except asyncio.TimeoutError:
             return f"Error: execution timed out after {timeout}s."

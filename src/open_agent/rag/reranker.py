@@ -48,7 +48,7 @@ class BGEReranker(Reranker):
 
     def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3") -> None:
         try:
-            from sentence_transformers import CrossEncoder
+            from sentence_transformers import CrossEncoder  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError(
                 "sentence-transformers is required for BGEReranker. "

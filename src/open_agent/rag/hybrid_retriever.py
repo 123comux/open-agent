@@ -267,14 +267,15 @@ class HybridRetriever:
         # Optional cross-encoder reranking over the top fused candidates.
         if fused:
             candidates = fused[: max(self.rerank_k, k)]
-            fused = self.reranker.rank(query, candidates)
+            # Cross-encoder reranking is CPU-bound; run it off the event loop.
+            fused = await asyncio.to_thread(self.reranker.rank, query, candidates)
 
         return [
             {
                 "id": d["id"],
                 "document": d["document"],
                 "metadata": d["metadata"],
-                "score": d.get("rerank_score", d["score"]),
+                "score": d.get("rerank_score") if "rerank_score" in d else d["score"],
             }
             for d in fused[:k]
         ]

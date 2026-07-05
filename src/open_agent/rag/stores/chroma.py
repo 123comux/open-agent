@@ -11,9 +11,10 @@ The synchronous ChromaDB client calls are offloaded to a worker thread with
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 try:
-    import chromadb
+    import chromadb  # type: ignore[import-not-found]
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "ChromaDB is required for ChromaStore. Install it with: "
@@ -45,7 +46,7 @@ class ChromaStore:
         self,
         ids: list[str],
         documents: list[str],
-        metadatas: list[dict] | None = None,
+        metadatas: list[dict[str, Any]] | None = None,
     ) -> None:
         """Add documents to the collection."""
         await asyncio.to_thread(
@@ -55,12 +56,13 @@ class ChromaStore:
             metadatas=metadatas,
         )
 
-    async def query(self, query_text: str, n_results: int = 5) -> list[dict]:
+    async def query(self, query_text: str, n_results: int = 5) -> list[dict[str, Any]]:
         """Return the ``n_results`` most similar documents for ``query_text``.
 
         Each result is a dict with keys ``id``, ``document``, ``score`` and
-        ``metadata``. The ``score`` is the raw ChromaDB distance, so lower
-        values indicate higher similarity.
+        ``metadata``. The ``score`` is converted from the raw ChromaDB distance
+        via ``1.0 - distance`` so that higher values indicate higher similarity,
+        matching FAISSStore's cosine-similarity semantics (higher = better).
         """
         if n_results <= 0:
             return []
@@ -73,13 +75,15 @@ class ChromaStore:
         docs_batch = raw.get("documents", [[]])[0]
         dists_batch = raw.get("distances", [[]])[0]
         meta_batch = raw.get("metadatas", [[]])[0]
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
         for i, doc_id in enumerate(ids_batch):
             results.append(
                 {
                     "id": doc_id,
                     "document": docs_batch[i] if i < len(docs_batch) else "",
-                    "score": float(dists_batch[i]) if i < len(dists_batch) else 0.0,
+                    # ChromaDB returns distances (lower = more similar); convert
+                    # to a similarity-like score so higher = better.
+                    "score": (1.0 - float(dists_batch[i])) if i < len(dists_batch) else 0.0,
                     "metadata": meta_batch[i] if i < len(meta_batch) else {},
                 }
             )

@@ -1,0 +1,54 @@
+version: "3.9"
+
+# Production deployment: builds optimized images and serves the frontend
+# as static files behind nginx.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    expose:
+      - "8000"
+    environment:
+      - OPEN_AGENT_MODEL_PROVIDER=${OPEN_AGENT_MODEL_PROVIDER:-openai}
+      - OPEN_AGENT_API_KEY=${OPEN_AGENT_API_KEY:-}
+      - OPEN_AGENT_BASE_URL=${OPEN_AGENT_BASE_URL:-https://api.openai.com/v1}
+      - OPEN_AGENT_MODEL_NAME=${OPEN_AGENT_MODEL_NAME:-gpt-4o-mini}
+      - OPEN_AGENT_SERVER_HOST=0.0.0.0
+      - OPEN_AGENT_SERVER_PORT=8000
+      - OPEN_AGENT_EMBEDDING_MODEL=${OPEN_AGENT_EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
+      - OPEN_AGENT_CHUNK_SIZE=${OPEN_AGENT_CHUNK_SIZE:-500}
+      - OPEN_AGENT_CHUNK_OVERLAP=${OPEN_AGENT_CHUNK_OVERLAP:-50}
+      - OPEN_AGENT_SPLIT_UNIT=${OPEN_AGENT_SPLIT_UNIT:-char}
+      - OPEN_AGENT_RAG_TOP_K=${OPEN_AGENT_RAG_TOP_K:-5}
+      - OPEN_AGENT_RERANKER_MODEL=${OPEN_AGENT_RERANKER_MODEL:-BAAI/bge-reranker-v2-m3}
+      - OPEN_AGENT_RERANK_K=${OPEN_AGENT_RERANK_K:-20}
+      - OPEN_AGENT_MCP_SERVERS_FILE=${OPEN_AGENT_MCP_SERVERS_FILE:-}
+      - OPEN_AGENT_ENABLE_OBSERVABILITY=${OPEN_AGENT_ENABLE_OBSERVABILITY:-true}
+      - OPEN_AGENT_OBSERVABILITY_PROVIDER=${OPEN_AGENT_OBSERVABILITY_PROVIDER:-local}
+      - OPEN_AGENT_OBSERVABILITY_OUTPUT_DIR=/app/.open_agent_traces
+      - OPEN_AGENT_LANGSMITH_API_KEY=${OPEN_AGENT_LANGSMITH_API_KEY:-}
+      - OPEN_AGENT_LANGSMITH_PROJECT=${OPEN_AGENT_LANGSMITH_PROJECT:-open-agent}
+    volumes:
+      - ./data:/app/data
+      - ./.open_agent_sessions:/app/.open_agent_sessions
+      - ./.open_agent_traces:/app/.open_agent_traces
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.prod
+    ports:
+      - "80:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

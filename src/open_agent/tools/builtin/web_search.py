@@ -10,7 +10,7 @@ import asyncio
 import re
 import time
 from html import unescape
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote
 
 import httpx
 
@@ -137,12 +137,10 @@ class WebSearchTool(Tool):
         await self._rate_limit()
         headers = {"User-Agent": self.USER_AGENT, "Accept-Language": "zh-CN,en;q=0.9"}
         params = {"q": query, "count": str(max_results * 2)}
-        async with httpx.AsyncClient(
-            timeout=self.TIMEOUT, follow_redirects=True
-        ) as client:
-            response = await client.get(self.BING_URL, params=params, headers=headers)
-            response.raise_for_status()
-            results = self._parse_bing(response.text, max_results)
+        client = _get_client()
+        response = await client.get(self.BING_URL, params=params, headers=headers)
+        response.raise_for_status()
+        results = self._parse_bing(response.text, max_results)
         return self._format(results)
 
     # ------------------------------------------------------------------
@@ -215,24 +213,20 @@ class WebSearchTool(Tool):
         await self._rate_limit()
         headers = {"User-Agent": self.USER_AGENT}
         data = {"q": query, "kl": "us-en"}
-        async with httpx.AsyncClient(
-            timeout=self.TIMEOUT, follow_redirects=True
-        ) as client:
-            response = await client.post(self.LITE_URL, data=data, headers=headers)
-            response.raise_for_status()
-            results = self._parse_lite(response.text, max_results)
+        client = _get_client()
+        response = await client.post(self.LITE_URL, data=data, headers=headers)
+        response.raise_for_status()
+        results = self._parse_lite(response.text, max_results)
         return self._format(results)
 
     async def _search_html(self, query: str, max_results: int) -> str:
         await self._rate_limit()
         headers = {"User-Agent": self.USER_AGENT}
         data = {"q": query}
-        async with httpx.AsyncClient(
-            timeout=self.TIMEOUT, follow_redirects=True
-        ) as client:
-            response = await client.post(self.HTML_URL, data=data, headers=headers)
-            response.raise_for_status()
-            results = self._parse_html(response.text, max_results)
+        client = _get_client()
+        response = await client.post(self.HTML_URL, data=data, headers=headers)
+        response.raise_for_status()
+        results = self._parse_html(response.text, max_results)
         return self._format(results)
 
     # ------------------------------------------------------------------
@@ -242,7 +236,8 @@ class WebSearchTool(Tool):
         query = str(kwargs.get("query", ""))
         if not query:
             return "Error: no query provided."
-        max_results = int(kwargs.get("max_results", 5))
+        max_results_raw = kwargs.get("max_results", 5)
+        max_results = int(max_results_raw) if isinstance(max_results_raw, int) else 5
 
         errors: list[str] = []
 
@@ -274,3 +269,36 @@ class WebSearchTool(Tool):
             errors.append(f"ddg-html: {type(exc).__name__}: {exc}")
 
         return "Error performing search: " + " | ".join(errors)
+
+# ---------------------------------------------------------------------------
+# Shared HTTP client with connection pooling (module-level singleton)
+# ---------------------------------------------------------------------------
+# A single client is reused across requests so keep-alive connections are
+# pooled, consistent with how the model adapters share an httpx.AsyncClient.
+# Callers must NOT wrap this client in ``async with`` (that would close it
+# after each request); use :func:`aclose` on shutdown instead.
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return the shared :class:`httpx.AsyncClient`, creating it lazily.
+
+    The client is configured with the tool's granular timeout and connection
+    limits that allow pooling of keep-alive connections.
+    """
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(
+            timeout=WebSearchTool.TIMEOUT,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+            follow_redirects=True,
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Close the shared HTTP client, if open. Idempotent."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None

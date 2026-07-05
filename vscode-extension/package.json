@@ -28,6 +28,18 @@
       {
         "command": "open-agent.setApiUrl",
         "title": "Open Agent: Set API URL"
+      },
+      {
+        "command": "open-agent.startBackend",
+        "title": "Open Agent: Start Backend"
+      },
+      {
+        "command": "open-agent.stopBackend",
+        "title": "Open Agent: Stop Backend"
+      },
+      {
+        "command": "open-agent.restartBackend",
+        "title": "Open Agent: Restart Backend"
       }
     ],
     "configuration": {
@@ -37,6 +49,21 @@
           "type": "string",
           "default": "http://localhost:8000",
           "description": "URL of the Open Agent API server"
+        },
+        "open-agent.autoStartBackend": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically start the Open Agent Python backend when VS Code activates"
+        },
+        "open-agent.pythonExecutable": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to start the backend"
+        },
+        "open-agent.backendCwd": {
+          "type": "string",
+          "default": "",
+          "description": "Working directory for the backend process (defaults to the first workspace folder)"
         }
       }
     }

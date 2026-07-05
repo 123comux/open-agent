@@ -1,17 +1,43 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.git/
-.github/
-.gh-config/
-.open_agent_sessions/
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build artifacts
 dist/
 build/
+
+# Git / CI
+.git/
+.github/
+.gitignore
+
+# Secrets and local config
+.env
+.env.*
+*.local
+
+# Logs and runtime data
+*.log
+data/
+.open_agent_sessions/
+.open_agent_traces/
+
+# Node.js
 node_modules/
 web/node_modules/
 vscode-extension/node_modules/
 web/dist/
-.env
-*.log
-data/
+
+# IDE
+.vscode/
+.idea/
+
+# Documentation and examples (not needed in runtime image)
+docs/
+tests/
+examples/

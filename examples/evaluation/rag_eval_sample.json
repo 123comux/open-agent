@@ -1,0 +1,65 @@
+{
+  "description": "Sample RAG evaluation dataset for Open Agent. Each case contains a question, the retrieved contexts, the generated answer, and optional ground-truth contexts.",
+  "test_cases": [
+    {
+      "question": "What is the capital of France?",
+      "expected_answer": "Paris",
+      "retrieved_contexts": [
+        "France is a country in Western Europe. Its capital city is Paris, which is also its largest city.",
+        "Paris is known for the Eiffel Tower and the Louvre Museum."
+      ],
+      "generated_answer": "The capital of France is Paris.",
+      "ground_truth_contexts": [
+        "France is a country in Western Europe. Its capital city is Paris, which is also its largest city."
+      ]
+    },
+    {
+      "question": "Who created the Python programming language?",
+      "expected_answer": "Guido van Rossum",
+      "retrieved_contexts": [
+        "Python was created by Guido van Rossum and was first released in 1991.",
+        "Python emphasizes code readability with its use of significant indentation."
+      ],
+      "generated_answer": "Python was created by Guido van Rossum.",
+      "ground_truth_contexts": [
+        "Python was created by Guido van Rossum and was first released in 1991."
+      ]
+    },
+    {
+      "question": "What is the speed of light?",
+      "expected_answer": "299,792 km/s",
+      "retrieved_contexts": [
+        "The speed of light in vacuum is approximately 299,792 kilometres per second.",
+        "Light travels faster through vacuum than through any other medium."
+      ],
+      "generated_answer": "The speed of light is approximately 300,000 km/s.",
+      "ground_truth_contexts": [
+        "The speed of light in vacuum is approximately 299,792 kilometres per second."
+      ]
+    },
+    {
+      "question": "When was the first iPhone released?",
+      "expected_answer": "2007",
+      "retrieved_contexts": [
+        "The first iPhone was released by Apple in 2007.",
+        "Steve Jobs announced the original iPhone on January 9, 2007."
+      ],
+      "generated_answer": "The first iPhone was released in 2007.",
+      "ground_truth_contexts": [
+        "The first iPhone was released by Apple in 2007."
+      ]
+    },
+    {
+      "question": "What is the largest planet in the solar system?",
+      "expected_answer": "Jupiter",
+      "retrieved_contexts": [
+        "Jupiter is the largest planet in the Solar System.",
+        "Saturn is the second-largest planet and is known for its ring system."
+      ],
+      "generated_answer": "Jupiter is the largest planet in the solar system.",
+      "ground_truth_contexts": [
+        "Jupiter is the largest planet in the Solar System."
+      ]
+    }
+  ]
+}

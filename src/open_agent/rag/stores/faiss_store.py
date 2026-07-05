@@ -14,7 +14,7 @@ import os
 from typing import Any
 
 try:
-    import faiss  # type: ignore[import-untyped]
+    import faiss  # type: ignore[import-not-found]
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "faiss is required for FAISSStore. Install it with: "
@@ -28,13 +28,7 @@ except ImportError as exc:  # pragma: no cover
         "numpy is required for FAISSStore. Install it with: pip install numpy"
     ) from exc
 
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError as exc:  # pragma: no cover
-    raise ImportError(
-        "sentence-transformers is required for FAISSStore. Install it with: "
-        "pip install sentence-transformers"
-    ) from exc
+from open_agent.rag.embedding_cache import get_embedding_model
 
 
 class FAISSStore:
@@ -54,15 +48,17 @@ class FAISSStore:
 
     def __init__(
         self,
-        embedding_model: str = "all-MiniLM-L6-v2",
+        embedding_model: str = "BAAI/bge-small-zh-v1.5",
         index_path: str | None = None,
     ) -> None:
-        self._model = SentenceTransformer(embedding_model)
+        self._model = get_embedding_model(embedding_model)
         self._dim = int(self._model.get_sentence_embedding_dimension())
         self._ids: list[str] = []
         self._documents: list[str] = []
         self._metadatas: list[dict[str, Any]] = []
         self._index: faiss.Index | None = None
+        self._index_path: str | None = index_path
+        self._lock = asyncio.Lock()
         if index_path is not None and os.path.exists(index_path):
             self._load_sync(index_path)
         else:
@@ -105,13 +101,14 @@ class FAISSStore:
             metadatas = [{} for _ in ids]
         elif len(metadatas) != len(ids):
             raise ValueError("metadatas must match ids in length")
-        vectors = await asyncio.to_thread(self._embed_sync, documents)
-        if self._index is None:
-            self._index = faiss.IndexFlatIP(self._dim)
-        self._index.add(vectors)
-        self._ids.extend(ids)
-        self._documents.extend(documents)
-        self._metadatas.extend(metadatas)
+        async with self._lock:
+            vectors = await asyncio.to_thread(self._embed_sync, documents)
+            if self._index is None:
+                self._index = faiss.IndexFlatIP(self._dim)
+            self._index.add(vectors)
+            self._ids.extend(ids)
+            self._documents.extend(documents)
+            self._metadatas.extend(metadatas)
 
     async def query(
         self, query_text: str, n_results: int = 5
@@ -186,19 +183,20 @@ class FAISSStore:
         """Remove documents by id, rebuilding the index without them."""
         if not ids or self._index is None:
             return
-        to_delete = set(ids)
-        keep = [i for i, doc_id in enumerate(self._ids) if doc_id not in to_delete]
-        new_ids = [self._ids[i] for i in keep]
-        new_documents = [self._documents[i] for i in keep]
-        new_metadatas = [self._metadatas[i] for i in keep]
-        new_index = faiss.IndexFlatIP(self._dim)
-        if new_documents:
-            vectors = await asyncio.to_thread(self._embed_sync, new_documents)
-            new_index.add(vectors)
-        self._index = new_index
-        self._ids = new_ids
-        self._documents = new_documents
-        self._metadatas = new_metadatas
+        async with self._lock:
+            to_delete = set(ids)
+            keep = [i for i, doc_id in enumerate(self._ids) if doc_id not in to_delete]
+            new_ids = [self._ids[i] for i in keep]
+            new_documents = [self._documents[i] for i in keep]
+            new_metadatas = [self._metadatas[i] for i in keep]
+            new_index = faiss.IndexFlatIP(self._dim)
+            if new_documents:
+                vectors = await asyncio.to_thread(self._embed_sync, new_documents)
+                new_index.add(vectors)
+            self._index = new_index
+            self._ids = new_ids
+            self._documents = new_documents
+            self._metadatas = new_metadatas
 
     async def count(self) -> int:
         """Return the number of documents in the store."""

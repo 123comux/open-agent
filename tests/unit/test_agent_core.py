@@ -109,3 +109,34 @@ async def test_agent_uses_memory(mock_model):
     assert "prior answer" in contents
     # After the run, the new exchange should be stored in memory.
     assert len(memory) == 4
+
+
+async def test_agent_uses_long_term_memory(mock_model):
+    """Relevant long-term memories are injected and the exchange is saved."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from open_agent.memory.long_term import MemoryEntry
+
+    ltm = MagicMock()
+    ltm.search = AsyncMock(
+        return_value=[MemoryEntry(text="User likes Python.", metadata={})]
+    )
+    ltm.add_exchange = AsyncMock()
+
+    mock_model.queue(ModelResponse(content="final answer"))
+    agent = Agent(
+        model=mock_model, tool_registry=_make_registry(), long_term_memory=ltm
+    )
+    output = await agent.run("What language should I use?")
+
+    assert output.response == "final answer"
+    ltm.search.assert_awaited_once_with("What language should I use?")
+    # The memory content should appear in the messages sent to the model.
+    first_call_messages = mock_model.calls[0]["messages"]
+    contents = [m.content for m in first_call_messages]
+    assert any("User likes Python" in c for c in contents)
+    ltm.add_exchange.assert_awaited_once_with(
+        user_input="What language should I use?",
+        assistant_response="final answer",
+        session_id="default",
+    )

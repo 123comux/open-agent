@@ -15,29 +15,29 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from typing import Any, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from open_agent.models.base import (
     Message,
     ModelInterface,
     ModelResponse,
-    ToolCall as OAToolCall,
     ToolSchema,
 )
 
 try:
-    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.callbacks import (
+        AsyncCallbackManagerForLLMRun,
+        CallbackManagerForLLMRun,
+    )
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.messages import (
         AIMessage,
         BaseMessage,
-        HumanMessage,
-        SystemMessage,
-        ToolMessage,
     )
     from langchain_core.outputs import ChatGeneration, ChatResult
     from langchain_core.tools import BaseTool
-    from pydantic import ConfigDict
+    from pydantic import ConfigDict, PrivateAttr
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
         "langchain-core is required for LangChainModelAdapter. "
@@ -83,9 +83,30 @@ class LangChainModelAdapter(BaseChatModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     wrapped_model: ModelInterface
+    _pool: Any = PrivateAttr(default=None)
 
     def __init__(self, model: ModelInterface, **kwargs: Any) -> None:
-        super().__init__(wrapped_model=model, **kwargs)
+        # `wrapped_model` is a pydantic field declared on this subclass; the
+        # parent BaseChatModel.__init__ stub does not know about subclass
+        # fields, so mypy cannot resolve the kwarg. Pydantic accepts it at
+        # runtime. This is a third-party stub limitation.
+        super().__init__(wrapped_model=model, **kwargs)  # type: ignore[call-arg]
+        # Reuse a single worker thread across sync generations instead of
+        # spinning one up on every _generate call.
+        self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def close(self) -> None:
+        """Shut down the reusable thread pool."""
+        pool = getattr(self, "_pool", None)
+        if pool is not None:
+            pool.shutdown(wait=False)
+            self._pool = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @property
     def _llm_type(self) -> str:
@@ -109,7 +130,7 @@ class LangChainModelAdapter(BaseChatModel):
         if isinstance(tool, BaseTool):
             args_schema = getattr(tool, "args_schema", None)
             if args_schema is not None and hasattr(args_schema, "model_json_schema"):
-                params: dict = args_schema.model_json_schema()
+                params: dict[str, Any] = args_schema.model_json_schema()
             else:
                 params = {"type": "object", "properties": dict(tool.args)}
             return ToolSchema(
@@ -139,8 +160,8 @@ class LangChainModelAdapter(BaseChatModel):
         )
 
     def _convert_tools(
-        self, tools: Optional[Sequence[Any]]
-    ) -> Optional[list[ToolSchema]]:
+        self, tools: Sequence[Any] | None
+    ) -> list[ToolSchema] | None:
         if not tools:
             return None
         return [self._convert_one_tool(tool) for tool in tools]
@@ -155,7 +176,7 @@ class LangChainModelAdapter(BaseChatModel):
 
     def _build_result(self, response: ModelResponse) -> ChatResult:
         """Build a LangChain ``ChatResult`` from our :class:`ModelResponse`."""
-        tool_calls: list[dict] = []
+        tool_calls: list[dict[str, Any]] = []
         for idx, call in enumerate(response.tool_calls):
             tool_calls.append(
                 {
@@ -174,9 +195,9 @@ class LangChainModelAdapter(BaseChatModel):
 
     def _generate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         """Sync generation -- bridges to the async provider.
@@ -190,23 +211,21 @@ class LangChainModelAdapter(BaseChatModel):
         our_tools = self._convert_tools(kwargs.get("tools"))
         coro = self.wrapped_model.chat(our_messages, tools=our_tools)
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            loop = None
-        if loop is not None and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                response = pool.submit(asyncio.run, coro).result()
-        elif loop is not None:
-            response = loop.run_until_complete(coro)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        if loop.is_running():
+            response = self._pool.submit(asyncio.run, coro).result()
         else:
-            response = asyncio.run(coro)
+            response = loop.run_until_complete(coro)
         return self._build_result(response)
 
     async def _agenerate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         """Async generation -- the primary path used by the LangGraph agent."""

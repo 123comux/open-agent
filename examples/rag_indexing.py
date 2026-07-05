@@ -1,11 +1,16 @@
-"""Agentic RAG: index a document, retrieve relevant chunks, feed them to an agent.
+"""Agentic RAG: index a document with KBManager and query it.
 
 This example shows how to:
-  * Chunk and index a document with :class:`Indexer`.
-  * Retrieve the most relevant chunks for a query with :class:`Retriever`.
-  * Inject the retrieved context into the agent's user prompt and answer.
+  * Write a sample ``.txt`` document to a temp directory.
+  * Index it into a knowledge base with :class:`KBManager`.
+  * Run a RAG query (route -> retrieve -> context) and feed the retrieved
+    context into an :class:`Agent` to answer a question.
 
-A fake model is used so the example runs with no API key.
+KBManager uses a sentence-transformers embedding model, which is downloaded on
+first use. If the embedding backend is unavailable, the example falls back to
+the lightweight :class:`Indexer`/:class:`Retriever` (keyword overlap) so it
+still runs end-to-end. A fake model is used for the final answer so no API key
+is needed.
 
 Run with:  python examples/rag_indexing.py
 """
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 from pathlib import Path
 
 # Make the local ``open_agent`` package importable from a source checkout.
@@ -20,9 +26,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from open_agent.agent.core import Agent, AgentOutput
 from open_agent.models.base import Message, ModelInterface, ModelResponse, ToolSchema
-from open_agent.rag.indexer import Indexer
-from open_agent.rag.retriever import Retriever
 from open_agent.tools.registry import ToolRegistry
+
+SAMPLE_DOCUMENT = """\
+Open Agent is a general-purpose autonomous work assistant.
+
+It follows a ReAct loop: it reasons, calls tools, observes results, then repeats
+until it can answer the user directly.
+
+The agent ships with builtin tools such as shell, python, and file operations.
+
+RAG is supported through a KBManager that chunks documents and a Retriever that
+finds the most relevant chunks by semantic similarity.
+"""
 
 
 class FakeModel(ModelInterface):
@@ -45,44 +61,66 @@ class FakeModel(ModelInterface):
         return ModelResponse(content=text)
 
 
-# A small multi-paragraph document used as the knowledge base for this example.
-SAMPLE_DOCUMENT = """\
-Open Agent is a general-purpose autonomous work assistant.
+async def index_and_query_with_kbmanager(sample_path: Path) -> str:
+    """Index ``sample_path`` with KBManager and return the retrieved context.
 
-It follows a ReAct loop: it reasons, calls tools, observes results, then repeats
-until it can answer the user directly.
+    Raises if the embedding backend cannot be loaded; the caller falls back to
+    the lightweight indexer.
+    """
+    from open_agent.rag.kb_manager import KBManager
 
-The agent ships with builtin tools such as shell, python, and file operations.
+    with tempfile.TemporaryDirectory() as storage_dir:
+        kb_manager = KBManager(storage_dir=storage_dir)
+        await kb_manager.create_kb("docs", description="sample documents")
+        chunks = await kb_manager.index_file(str(sample_path), "docs")
+        print(f"Indexed {chunks} chunks into KB 'docs' with KBManager.")
 
-RAG is supported through an Indexer that chunks documents and a Retriever that
-finds the most relevant chunks by keyword overlap.
-"""
+        query = "How does the agent's reasoning loop work?"
+        result = await kb_manager.query(query, top_k=2)
+        print(f"Routed KBs: {result['routed_kbs']}")
+        print(f"Retrieved {len(result['chunks'])} chunks.")
+        return result["context_text"]
+
+def index_and_query_with_indexer(sample_path: Path) -> str:
+    """Lightweight fallback: keyword-overlap retrieval with Indexer/Retriever."""
+    from open_agent.rag.indexer import Indexer
+    from open_agent.rag.retriever import Retriever
+
+    indexer = Indexer(chunk_size=1, chunk_overlap=0)
+    chunks = indexer.index_text(
+        doc_id="sample",
+        text=sample_path.read_text(encoding="utf-8"),
+        metadata={"source": str(sample_path)},
+    )
+    print(f"Indexed {len(chunks)} chunks with the lightweight Indexer.")
+    retriever = Retriever(indexer=indexer, top_k=2)
+    relevant = retriever.retrieve("How does the agent's reasoning loop work?")
+    print(f"Top {len(relevant)} chunks retrieved.")
+    return "\n\n".join(f"[{i}] {c.text}" for i, c in enumerate(relevant, 1))
 
 
 async def main() -> None:
-    # 1. Index the document. With chunk_size=1 each paragraph becomes its own
-    #    chunk. ``index_text`` is a convenience wrapper around ``index``.
-    indexer = Indexer(chunk_size=1, chunk_overlap=0)
-    chunks = indexer.index_text(
-        doc_id="readme", text=SAMPLE_DOCUMENT, metadata={"source": "intro"}
-    )
-    print(f"Indexed {len(chunks)} chunks from the document.")
-    for i, chunk in enumerate(chunks, 1):
-        print(f"  [{i}] {chunk.text!r}")
+    # 1. Write a sample .txt document to a temp file.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(SAMPLE_DOCUMENT)
+        sample_path = Path(tmp.name)
+    print(f"Sample document written to: {sample_path}")
 
-    # 2. Retrieve the chunks most relevant to a user query.
-    retriever = Retriever(indexer=indexer, top_k=2)
+    # 2. Index and retrieve. Try KBManager (semantic) first, fall back to the
+    #    lightweight Indexer if the embedding backend is unavailable.
+    try:
+        context = await index_and_query_with_kbmanager(sample_path)
+    except Exception as exc:  # noqa: BLE001 - fall back gracefully
+        print(f"KBManager path unavailable ({type(exc).__name__}: {exc}).")
+        print("Falling back to the lightweight Indexer/Retriever.")
+        context = index_and_query_with_indexer(sample_path)
+    finally:
+        sample_path.unlink(missing_ok=True)
+
+    # 3. Feed the retrieved context into the agent and answer.
     query = "How does the agent's reasoning loop work?"
-    relevant = retriever.retrieve(query)
-    print(f"\nTop {len(relevant)} chunks for query: {query!r}")
-    for i, chunk in enumerate(relevant, 1):
-        print(f"  [{i}] (doc={chunk.document_id}) {chunk.text!r}")
-
-    # 3. Integrate the RAG results into the agent's context. We build an
-    #    augmented prompt that includes the retrieved evidence and run the agent.
-    context = "\n\n".join(
-        f"[{i}] {c.text}" for i, c in enumerate(relevant, 1)
-    )
     augmented_prompt = (
         "Use the following retrieved context to answer the question.\n\n"
         f"Context:\n{context}\n\n"

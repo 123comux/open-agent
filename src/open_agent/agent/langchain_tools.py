@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from typing import Any, Optional, Type
+from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, create_model
 
@@ -49,7 +49,7 @@ def _json_type_to_py_type(spec: Any) -> Any:
     return _JSON_TYPE_MAP.get(json_type, str)
 
 
-def _parameters_to_pydantic(tool: Tool) -> Type[BaseModel]:
+def _parameters_to_pydantic(tool: Tool) -> type[BaseModel]:
     """Build a pydantic args model from the tool's JSON-schema ``parameters``.
 
     Used as the LangChain ``args_schema`` for input validation when the tool is
@@ -83,8 +83,8 @@ class ToolAdapter(BaseTool):
 
     name: str = ""
     description: str = ""
-    args_schema: Optional[Type[BaseModel]] = None
-    raw_parameters: dict = Field(default_factory=dict)
+    args_schema: type[BaseModel] | None = None
+    raw_parameters: dict[str, Any] = Field(default_factory=dict)
 
     _oa_tool: Tool = PrivateAttr()
 

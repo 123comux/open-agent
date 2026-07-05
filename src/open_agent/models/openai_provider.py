@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from open_agent.models._http import request_with_retry
 from open_agent.models.base import (
     Message,
     ModelInterface,
@@ -36,6 +37,25 @@ class OpenAIModel(ModelInterface):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    @property
+    def _async_client(self) -> httpx.AsyncClient:
+        """Return a shared async client with connection pooling."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                timeout=self.timeout,
+                limits=httpx.Limits(
+                    max_connections=10, max_keepalive_connections=5
+                ),
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def _build_payload(
         self,
@@ -61,7 +81,7 @@ class OpenAIModel(ModelInterface):
         return payload
 
     @staticmethod
-    def _parse_arguments(raw_args: Any) -> dict:
+    def _parse_arguments(raw_args: Any) -> dict[str, Any]:
         if isinstance(raw_args, str):
             try:
                 parsed = json.loads(raw_args)
@@ -101,10 +121,11 @@ class OpenAIModel(ModelInterface):
             "Content-Type": "application/json",
         }
         payload = self._build_payload(messages, tools)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        response = await request_with_retry(
+            self._async_client, "POST", url, headers=headers, json=payload
+        )
+        response.raise_for_status()
+        data = response.json()
         return self._parse_response(data)
 
     async def stream_chat(
@@ -120,21 +141,34 @@ class OpenAIModel(ModelInterface):
         }
         payload = self._build_payload(messages, tools)
         payload["stream"] = True
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str.strip() == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            choices = data.get("choices") or []
-                            if choices:
-                                delta = choices[0].get("delta", {})
-                                content = delta.get("content")
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
+        # NOTE: Streaming bypasses ``request_with_retry`` because a full retry
+        # would require buffering already-yielded chunks to resume cleanly. As
+        # a partial mitigation we retry ONCE on a connection error
+        # (``httpx.TransportError``) raised while opening the stream; HTTP
+        # errors that occur mid-stream are surfaced immediately because the
+        # response has already started.
+        for attempt in range(2):
+            try:
+                async with self._async_client.stream(
+                    "POST", url, headers=headers, json=payload
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                choices = data.get("choices") or []
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content")
+                                    if content:
+                                        yield content
+                            except json.JSONDecodeError:
+                                continue
+                return
+            except httpx.TransportError:
+                if attempt >= 1:
+                    raise

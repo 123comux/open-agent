@@ -37,8 +37,9 @@ by :class:`~open_agent.models.langchain_adapter.LangChainModelAdapter`).
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any, Sequence, TypedDict, Union
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -64,7 +65,6 @@ except ImportError as exc:  # pragma: no cover - import guard
 
 from open_agent.agent.langchain_tools import to_langchain_tool
 from open_agent.models.langchain_adapter import LangChainModelAdapter
-
 
 SYSTEM_PROMPT = """\
 You are Open Agent, a general-purpose autonomous work assistant with Agentic RAG capabilities.
@@ -101,7 +101,8 @@ Tool Selection Guidelines:
 - For system commands: use shell tool
 - Multiple tools can be called in sequence for complex tasks
 
-Always explain your reasoning before calling a tool. After receiving tool results, verify the information is correct and sufficient before giving your final answer.
+- Always explain your reasoning before calling a tool. After receiving tool results,
+  verify the information is correct and sufficient before giving your final answer.
 """
 
 INTENT_PROMPT = (
@@ -146,17 +147,23 @@ class AgentOutput(BaseModel):
     steps: int
     intent: str = ""
     sub_tasks: list[str] = Field(default_factory=list)
-    tool_calls_made: list[dict] = Field(default_factory=list)
+    tool_calls_made: list[dict[str, Any]] = Field(default_factory=list)
     thoughts: list[str] = Field(default_factory=list)
     reflections: list[str] = Field(default_factory=list)
 
 
-class AgentState(TypedDict):
-    """Mutable state threaded through the LangGraph agent graph."""
+class AgentState(TypedDict, total=False):
+    """Mutable state threaded through the LangGraph agent graph.
 
-    messages: list
-    tool_results: list
-    thoughts: list
+    ``total=False`` because LangGraph nodes return partial state updates
+    (only the keys they modify) which are merged into the full state by the
+    graph runtime. All keys are present in the initial state passed to
+    ``run`` and in the final state returned by ``ainvoke``.
+    """
+
+    messages: list[BaseMessage]
+    tool_results: list[dict[str, Any]]
+    thoughts: list[str]
     steps: int
     intent: str  # classified intent
     sub_tasks: list[str]  # decomposed sub-tasks
@@ -167,7 +174,7 @@ class AgentState(TypedDict):
 
 
 # Type alias for the accepted model input.
-AcceptedModel = Union[BaseChatModel, ModelInterface]
+AcceptedModel = BaseChatModel | ModelInterface
 
 
 class LangGraphAgent:
@@ -186,7 +193,7 @@ class LangGraphAgent:
     def __init__(
         self,
         model: AcceptedModel,
-        tools: Sequence[Union[Tool, BaseTool]],
+        tools: Sequence[Tool | BaseTool],
         max_steps: int = 10,
     ) -> None:
         if max_steps < 1:
@@ -396,7 +403,7 @@ class LangGraphAgent:
     async def _tools_node(self, state: AgentState) -> AgentState:
         """Execute the tool calls requested in the last assistant message."""
         messages: list[BaseMessage] = list(state["messages"])
-        tool_results: list[dict] = list(state["tool_results"])
+        tool_results: list[dict[str, Any]] = list(state["tool_results"])
         thoughts: list[str] = list(state["thoughts"])
 
         last = messages[-1]
@@ -443,7 +450,7 @@ class LangGraphAgent:
         messages: list[BaseMessage] = list(state["messages"])
         thoughts: list[str] = list(state["thoughts"])
         reflections: list[str] = list(state.get("reflections", []))
-        tool_results: list[dict] = list(state["tool_results"])
+        tool_results: list[dict[str, Any]] = list(state["tool_results"])
         error_count = state["error_count"]
         current_step = state["steps"]
         user_question = self._extract_user_question(messages)
@@ -610,7 +617,7 @@ class LangGraphAgent:
         if not response_text and state["messages"]:
             response_text = self._extract_text(state["messages"][-1])
 
-        tool_calls_made: list[dict] = []
+        tool_calls_made: list[dict[str, Any]] = []
         for result in state["tool_results"]:
             tool_calls_made.append(
                 {
@@ -674,7 +681,7 @@ class LangGraphAgent:
         return "sufficient"
 
     @staticmethod
-    def _summarize_tool_results(tool_results: list[dict]) -> str:
+    def _summarize_tool_results(tool_results: list[dict[str, Any]]) -> str:
         if not tool_results:
             return "(no tool results yet)"
         lines: list[str] = []
@@ -701,10 +708,10 @@ class LangGraphAgent:
     def _record_tool_result(
         step: int,
         name: str,
-        arguments: dict,
+        arguments: dict[str, Any],
         observation: str,
         is_error: bool,
-    ) -> dict:
+    ) -> dict[str, Any]:
         return {
             "step": step,
             "name": name,

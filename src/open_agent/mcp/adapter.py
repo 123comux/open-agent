@@ -1,8 +1,6 @@
 """Adapter that wraps MCP tools as Open Agent ``Tool`` instances."""
 from __future__ import annotations
 
-from typing import Any
-
 from mcp.types import Tool as MCPTool
 
 from open_agent.mcp.client import MCPClient

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from typing import Any
 
 try:
     import mcp  # noqa: F401  -- capability gate; ensures the mcp extra is installed
@@ -56,13 +57,13 @@ class MCPClient:
             await self._connect_sse()
         await self._initialize()
 
-    async def list_tools(self) -> list[dict]:
+    async def list_tools(self) -> list[dict[str, Any]]:
         """Return the list of tools advertised by the MCP server."""
         result = await self._send_request("tools/list", {})
         tools = result.get("tools", [])
         return tools if isinstance(tools, list) else []
 
-    async def call_tool(self, name: str, arguments: dict) -> str:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Invoke ``name`` on the MCP server with ``arguments``; return text output."""
         result = await self._send_request(
             "tools/call", {"name": name, "arguments": arguments}
@@ -118,8 +119,8 @@ class MCPClient:
 
     # -- JSON-RPC plumbing ----------------------------------------------
 
-    async def _send_request(self, method: str, params: dict) -> dict:
-        request: dict = {
+    async def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        request: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": uuid.uuid4().hex,
             "method": method,
@@ -129,8 +130,8 @@ class MCPClient:
             return await self._send_request_stdio(request)
         return await self._send_request_sse(request)
 
-    async def _send_notification(self, method: str, params: dict) -> None:
-        notification: dict = {
+    async def _send_notification(self, method: str, params: dict[str, Any]) -> None:
+        notification: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": method,
             "params": params,
@@ -140,7 +141,7 @@ class MCPClient:
         else:
             await self._send_notification_sse(notification)
 
-    async def _send_request_stdio(self, request: dict) -> dict:
+    async def _send_request_stdio(self, request: dict[str, Any]) -> dict[str, Any]:
         assert self._process is not None
         assert self._process.stdin is not None
         assert self._process.stdout is not None
@@ -153,14 +154,14 @@ class MCPClient:
         message = json.loads(response_line.decode())
         return self._unwrap(message)
 
-    async def _send_notification_stdio(self, notification: dict) -> None:
+    async def _send_notification_stdio(self, notification: dict[str, Any]) -> None:
         assert self._process is not None
         assert self._process.stdin is not None
         payload = json.dumps(notification) + "\n"
         self._process.stdin.write(payload.encode())
         await self._process.stdin.drain()
 
-    async def _send_request_sse(self, request: dict) -> dict:
+    async def _send_request_sse(self, request: dict[str, Any]) -> dict[str, Any]:
         assert self._http_client is not None
         assert self._url is not None
         async with self._http_client.stream("POST", self._url, json=request) as response:
@@ -179,7 +180,7 @@ class MCPClient:
             message = json.loads(body.decode())
             return self._unwrap(message)
 
-    async def _send_notification_sse(self, notification: dict) -> None:
+    async def _send_notification_sse(self, notification: dict[str, Any]) -> None:
         assert self._http_client is not None
         assert self._url is not None
         resp = await self._http_client.post(self._url, json=notification)
@@ -188,7 +189,7 @@ class MCPClient:
     # -- helpers ---------------------------------------------------------
 
     @staticmethod
-    def _parse_sse_line(line: str) -> dict | None:
+    def _parse_sse_line(line: str) -> dict[str, Any] | None:
         line = line.strip()
         if not line or line.startswith(":"):
             return None
@@ -203,14 +204,15 @@ class MCPClient:
         return None
 
     @staticmethod
-    def _unwrap(message: dict) -> dict:
+    def _unwrap(message: dict[str, Any]) -> dict[str, Any]:
         if "error" in message:
             err = message["error"]
             raise RuntimeError(f"MCP error ({err.get('code')}): {err.get('message')}")
-        return message.get("result", {})
+        result = message.get("result", {})
+        return result if isinstance(result, dict) else {}
 
     @staticmethod
-    def _extract_text(result: dict) -> str:
+    def _extract_text(result: dict[str, Any]) -> str:
         content = result.get("content", [])
         if isinstance(content, list):
             texts = [
@@ -220,6 +222,7 @@ class MCPClient:
             ]
             if texts:
                 return "\n".join(texts)
-        if isinstance(result.get("text"), str):
-            return result["text"]
+        text = result.get("text")
+        if isinstance(text, str):
+            return text
         return json.dumps(result)

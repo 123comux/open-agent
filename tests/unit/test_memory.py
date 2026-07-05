@@ -1,7 +1,13 @@
 """Tests for short-term and long-term memory."""
 from __future__ import annotations
 
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from open_agent.memory.long_term import LongTermMemory, MemoryEntry
+from open_agent.memory.session_manager import SessionManager
 from open_agent.memory.short_term import ShortTermMemory
 from open_agent.models.base import Message
 
@@ -55,70 +61,178 @@ def test_short_term_get_history_returns_copy():
     assert len(second) == 1
 
 
-def test_long_term_add_and_search():
+@pytest.fixture
+def mock_faiss_store():
+    """Return a patched FAISSStore usable for LongTermMemory tests.
+
+    Avoids importing the real faiss_store module (which requires faiss) by
+    injecting a fake submodule into ``sys.modules``.
+    """
+    store = MagicMock()
+    store.add = AsyncMock()
+    store.query = AsyncMock(return_value=[])
+    store.delete = AsyncMock()
+    store.save = AsyncMock()
+    store.count = AsyncMock(return_value=0)
+    store._ids = []
+
+    fake_module = MagicMock()
+    fake_module.FAISSStore = MagicMock(return_value=store)
+
+    with patch.dict(
+        "sys.modules", {"open_agent.rag.stores.faiss_store": fake_module}
+    ):
+        yield store
+
+
+@pytest.mark.asyncio
+async def test_long_term_add_calls_store_and_persists(mock_faiss_store):
     mem = LongTermMemory()
-    mem.add("Python is a programming language.")
-    mem.add("The cat sat on the mat.")
-    mem.add("Python is great for data science.", metadata={"tag": "ds"})
+    entry = await mem.add("Python is great.", metadata={"tag": "py"})
 
-    results = mem.search("Python")
-    assert len(results) == 2
-    texts = {r.text for r in results}
-    assert "Python is a programming language." in texts
-    assert "Python is great for data science." in texts
+    assert isinstance(entry, MemoryEntry)
+    assert entry.text == "Python is great."
+    assert entry.metadata == {"tag": "py"}
+    mock_faiss_store.add.assert_awaited_once()
+    call_args = mock_faiss_store.add.call_args
+    assert call_args.kwargs["documents"] == ["Python is great."]
+    assert call_args.kwargs["metadatas"][0]["tag"] == "py"
+    mock_faiss_store.save.assert_awaited_once()
 
 
-def test_long_term_search_case_insensitive():
+@pytest.mark.asyncio
+async def test_long_term_add_exchange_formats_text(mock_faiss_store):
     mem = LongTermMemory()
-    mem.add("The Quick Brown Fox")
-    results = mem.search("quick")
+    entry = await mem.add_exchange("hello", "hi there", session_id="s1")
+
+    assert "User: hello" in entry.text
+    assert "Assistant: hi there" in entry.text
+    assert entry.metadata.get("type") == "exchange"
+    assert entry.metadata.get("session_id") == "s1"
+
+
+@pytest.mark.asyncio
+async def test_long_term_search_returns_entries(mock_faiss_store):
+    mem = LongTermMemory()
+    mock_faiss_store.query.return_value = [
+        {
+            "id": "id-1",
+            "document": "Python note",
+            "score": 0.9,
+            "metadata": {"timestamp": 123.0},
+        }
+    ]
+
+    results = await mem.search("python")
+
     assert len(results) == 1
-    assert results[0].text == "The Quick Brown Fox"
+    assert results[0].text == "Python note"
+    assert results[0].id == "id-1"
+    mock_faiss_store.query.assert_awaited_once_with(query_text="python", n_results=3)
 
 
-def test_long_term_search_no_match():
+@pytest.mark.asyncio
+async def test_long_term_search_empty_query_returns_nothing(mock_faiss_store):
     mem = LongTermMemory()
-    mem.add("hello world")
-    assert mem.search("missing") == []
+    assert await mem.search("") == []
+    assert await mem.search("   ") == []
+    mock_faiss_store.query.assert_not_called()
 
 
-def test_long_term_search_empty_query():
+@pytest.mark.asyncio
+async def test_long_term_add_empty_text_raises(mock_faiss_store):
     mem = LongTermMemory()
-    mem.add("hello world")
-    assert mem.search("") == []
+    with pytest.raises(ValueError):
+        await mem.add("")
+    with pytest.raises(ValueError):
+        await mem.add("   ")
 
 
-def test_long_term_search_ranks_by_occurrence_count():
+@pytest.mark.asyncio
+async def test_long_term_delete_removes_existing_entry(mock_faiss_store):
     mem = LongTermMemory()
-    mem.add("cat cat cat")
-    mem.add("cat")
-    results = mem.search("cat")
-    assert len(results) == 2
-    assert results[0].text == "cat cat cat"
-    assert results[1].text == "cat"
+    mock_faiss_store.count.side_effect = [1, 0]
+
+    deleted = await mem.delete("id-1")
+
+    assert deleted is True
+    mock_faiss_store.delete.assert_awaited_once_with(["id-1"])
+    mock_faiss_store.save.assert_awaited_once()
 
 
-def test_long_term_search_respects_k_limit():
+@pytest.mark.asyncio
+async def test_long_term_delete_missing_entry_returns_false(mock_faiss_store):
     mem = LongTermMemory()
-    for i in range(6):
-        mem.add(f"item item {i}")
-    results = mem.search("item", k=3)
-    assert len(results) == 3
+    mock_faiss_store.count.side_effect = [1, 1]
+
+    deleted = await mem.delete("missing")
+
+    assert deleted is False
 
 
-def test_long_term_add_with_metadata():
+@pytest.mark.asyncio
+async def test_long_term_clear_deletes_all(mock_faiss_store):
     mem = LongTermMemory()
-    mem.add("note", metadata={"source": "test"})
-    results = mem.search("note")
+    mock_faiss_store._ids = ["a", "b"]
+
+    await mem.clear()
+
+    mock_faiss_store.delete.assert_awaited_once_with(["a", "b"])
+    mock_faiss_store.save.assert_awaited_once()
+
+
+def test_session_manager_rename_updates_memory_and_file(tmp_path):
+    manager = SessionManager(storage_dir=str(tmp_path))
+    manager.add_message("old-id", Message(role="user", content="hello"))
+
+    manager.rename_session("old-id", "new-id")
+
+    assert "old-id" not in manager.list_sessions()
+    assert "new-id" in manager.list_sessions()
+    assert len(manager.get_history("new-id")) == 1
+    assert not (tmp_path / "old-id.json").exists()
+    assert (tmp_path / "new-id.json").exists()
+
+
+def test_session_manager_rename_raises_on_duplicate(tmp_path):
+    manager = SessionManager(storage_dir=str(tmp_path))
+    manager.add_message("a", Message(role="user", content="hello"))
+    manager.add_message("b", Message(role="user", content="world"))
+
+    with pytest.raises(ValueError):
+        manager.rename_session("a", "b")
+
+
+def test_session_manager_search_matches_id_and_content():
+    manager = SessionManager()
+    manager.add_message("session-alpha", Message(role="user", content="Python tips"))
+    manager.add_message("session-beta", Message(role="user", content="JavaScript tips"))
+
+    results = manager.search_sessions("python")
+
     assert len(results) == 1
-    assert isinstance(results[0], MemoryEntry)
-    assert results[0].metadata == {"source": "test"}
+    assert results[0]["session_id"] == "session-alpha"
+    assert results[0]["matches"] == 1
 
 
-def test_long_term_all_entries_and_clear():
-    mem = LongTermMemory()
-    mem.add("a")
-    mem.add("b")
-    assert len(mem.all_entries()) == 2
-    mem.clear()
-    assert mem.all_entries() == []
+def test_session_manager_export_json():
+    manager = SessionManager()
+    manager.add_message("s1", Message(role="user", content="hi"))
+    manager.add_message("s1", Message(role="assistant", content="hello"))
+
+    content = manager.export_session("s1", fmt="json")
+    data = json.loads(content)
+
+    assert data["session_id"] == "s1"
+    assert len(data["messages"]) == 2
+
+
+def test_session_manager_export_markdown():
+    manager = SessionManager()
+    manager.add_message("s1", Message(role="user", content="hi"))
+
+    content = manager.export_session("s1", fmt="md")
+
+    assert "# Session: s1" in content
+    assert "## User" in content
+    assert "hi" in content

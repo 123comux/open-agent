@@ -9,7 +9,6 @@ from open_agent.models.base import (
     Message,
     ModelInterface,
     ModelResponse,
-    ToolCall,
     ToolSchema,
 )
 from open_agent.tools.builtin.file import FileTool

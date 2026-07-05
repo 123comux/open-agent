@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from open_agent.models._http import request_with_retry
 from open_agent.models.base import (
     Message,
     ModelInterface,
@@ -33,16 +34,31 @@ class AnthropicModel(ModelInterface):
         api_key: str,
         model: str = "claude-3-5-sonnet-20241022",
         timeout: float = 60.0,
+        max_tokens: int = 4096,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        self.max_tokens = max_tokens
+        self._client: httpx.AsyncClient | None = None
+
+    @property
+    def _async_client(self) -> httpx.AsyncClient:
+        """Return a shared async client with connection pooling."""
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def _build_payload(
         self,
         messages: list[Message],
         tools: list[ToolSchema] | None,
-        max_tokens: int = 4096,
     ) -> dict[str, Any]:
         system_parts: list[str] = []
         convo: list[dict[str, Any]] = []
@@ -51,10 +67,20 @@ class AnthropicModel(ModelInterface):
                 system_parts.append(m.content)
             else:
                 convo.append({"role": m.role, "content": m.content})
+        # Anthropic requires strictly alternating user/assistant turns. Merge
+        # consecutive messages with the same role by joining their content
+        # with a newline so we never violate that contract.
+        merged: list[dict[str, Any]] = []
+        for entry in convo:
+            if merged and merged[-1]["role"] == entry["role"]:
+                prev_content = merged[-1]["content"]
+                merged[-1]["content"] = f"{prev_content}\n{entry['content']}"
+            else:
+                merged.append({"role": entry["role"], "content": entry["content"]})
         payload: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": convo,
+            "max_tokens": self.max_tokens,
+            "messages": merged,
         }
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
@@ -98,10 +124,11 @@ class AnthropicModel(ModelInterface):
             "Content-Type": "application/json",
         }
         payload = self._build_payload(messages, tools)
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(self.API_URL, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
+        response = await request_with_retry(
+            self._async_client, "POST", self.API_URL, headers=headers, json=payload
+        )
+        response.raise_for_status()
+        data = response.json()
         return self._parse_response(data)
 
     async def stream_chat(
@@ -121,22 +148,33 @@ class AnthropicModel(ModelInterface):
         }
         payload = self._build_payload(messages, tools)
         payload["stream"] = True
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            async with client.stream(
-                "POST", self.API_URL, headers=headers, json=payload
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    try:
-                        data = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    if data.get("type") == "content_block_delta":
-                        delta = data.get("delta") or {}
-                        if delta.get("type") == "text_delta":
-                            text = delta.get("text")
-                            if text:
-                                yield text
+        # NOTE: Streaming bypasses ``request_with_retry`` because a full retry
+        # would require buffering already-yielded chunks to resume cleanly. As
+        # a partial mitigation we retry ONCE on a connection error
+        # (``httpx.TransportError``) raised while opening the stream; HTTP
+        # errors that occur mid-stream are surfaced immediately because the
+        # response has already started.
+        for attempt in range(2):
+            try:
+                async with self._async_client.stream(
+                    "POST", self.API_URL, headers=headers, json=payload
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        if data.get("type") == "content_block_delta":
+                            delta = data.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text")
+                                if text:
+                                    yield text
+                return
+            except httpx.TransportError:
+                if attempt >= 1:
+                    raise
