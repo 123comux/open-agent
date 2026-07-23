@@ -34,7 +34,7 @@ def _get_encoding(model: str) -> Any:
     tiktoken is not installed; the resulting :class:`ImportError` propagates
     to the caller (typically caught by :func:`estimate_tokens`).
     """
-    import tiktoken  # type: ignore[import-not-found]
+    import tiktoken
 
     key = model or "default"
     if key in _encoding_cache:

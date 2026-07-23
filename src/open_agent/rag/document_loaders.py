@@ -139,7 +139,7 @@ def load_pdf(file_path: str) -> LoadedDocument:
 def _load_pdf_with_pypdf2(file_path: str) -> LoadedDocument:
     """Fallback PDF loader using PyPDF2."""
     try:
-        from PyPDF2 import PdfReader  # type: ignore[import-not-found]
+        from PyPDF2 import PdfReader
     except ImportError:
         raise ImportError(
             "PDF loading requires PyMuPDF (pip install pymupdf) or PyPDF2 (pip install pypdf2)."

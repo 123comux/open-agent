@@ -14,7 +14,7 @@ import os
 from typing import Any
 
 try:
-    import faiss  # type: ignore[import-not-found]
+    import faiss
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "faiss is required for FAISSStore. Install it with: "

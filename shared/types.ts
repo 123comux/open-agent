@@ -54,7 +54,7 @@ export type StreamEvent =
 
 /** Editable runtime settings returned by `GET /api/settings`. */
 export interface AgentSettings {
-  model_provider: "openai" | "anthropic" | "ollama";
+  model_provider: "openai" | "anthropic" | "ollama" | "zhipu";
   base_url: string;
   model_name: string;
   max_steps: number;
