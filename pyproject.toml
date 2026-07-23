@@ -124,7 +124,10 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "numpy.*"
+module = [
+    "numpy",
+    "numpy.*",
+]
 follow_imports = "skip"
 ignore_missing_imports = true
 
