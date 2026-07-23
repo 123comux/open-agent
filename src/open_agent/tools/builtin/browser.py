@@ -28,11 +28,11 @@ from open_agent.tools.sandbox import check_path
 
 # Playwright is an optional dependency.
 try:
-    from playwright.async_api import async_playwright  # type: ignore[import-not-found]
+    from playwright.async_api import async_playwright
 
     _PLAYWRIGHT_AVAILABLE = True
 except Exception:  # pragma: no cover
-    async_playwright = None
+    async_playwright = None  # type: ignore[assignment]
     _PLAYWRIGHT_AVAILABLE = False
 
 
@@ -291,7 +291,7 @@ class BrowserTool(Tool):
             browser = await playwright.chromium.launch(headless=True)
             stack.push_async_callback(_safe_close, browser)
             context = await browser.new_context(
-                viewport=self.DEFAULT_VIEWPORT,
+                viewport=self.DEFAULT_VIEWPORT,  # type: ignore[arg-type]
                 user_agent=self.USER_AGENT,
             )
             stack.push_async_callback(_safe_close, context)

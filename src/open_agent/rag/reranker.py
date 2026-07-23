@@ -61,7 +61,7 @@ class BGEReranker(Reranker):
         if self._model is not None:
             return
         try:
-            from sentence_transformers import CrossEncoder  # type: ignore[import-not-found]
+            from sentence_transformers import CrossEncoder
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError(
                 "sentence-transformers is required for BGEReranker. "
