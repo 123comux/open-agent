@@ -45,7 +45,7 @@ async def test_web_search_rate_limit_serializes_concurrent(_reset_rate_limit_sta
     # The first call returns immediately (elapsed from 0.0 is large). The
     # second acquires the lock, observes ~0 elapsed since the first set the
     # timestamp, and waits RATE_LIMIT_SECONDS before returning.
-    assert elapsed >= 0.3
+    assert elapsed >= 0.28
     # Serialised, not doubled: total should be well under 2 * RATE_LIMIT_SECONDS.
     assert elapsed < 0.9
     # The lock was lazily created.

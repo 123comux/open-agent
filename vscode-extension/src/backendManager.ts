@@ -22,7 +22,7 @@ export class BackendManager {
 
   public readonly onStatusChange = this.onStatusChangeEmitter.event;
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(context: vscode.ExtensionContext) {
     this.outputChannel = vscode.window.createOutputChannel('Open Agent Backend');
     context.subscriptions.push(this.outputChannel);
     context.subscriptions.push(this.onStatusChangeEmitter);

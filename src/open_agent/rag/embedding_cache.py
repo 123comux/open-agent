@@ -18,7 +18,7 @@ def get_embedding_model(model_name: str) -> Any:
     instance, avoiding redundant multi-hundred-MB loads.
     """
     if model_name not in _embedding_cache:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]
+        from sentence_transformers import SentenceTransformer
 
         _embedding_cache[model_name] = SentenceTransformer(model_name)
     return _embedding_cache[model_name]

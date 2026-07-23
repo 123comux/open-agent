@@ -16,7 +16,7 @@ from collections import Counter
 from typing import Any
 
 try:
-    from rank_bm25 import BM25Okapi  # type: ignore[import-not-found]
+    from rank_bm25 import BM25Okapi
 
     _HAS_RANK_BM25 = True
 except ImportError:
@@ -148,9 +148,13 @@ class HybridRetriever:
         ids, docs, metas = await self._get_corpus()
         tokenized = [_tokenize(d) for d in docs]
         if tokenized:
-            self._kw_index = (
-                BM25Okapi(tokenized) if _HAS_RANK_BM25 else _BM25(tokenized)
-            )
+            if _HAS_RANK_BM25:
+                kw_index = BM25Okapi(tokenized)
+                if all(v == 0.0 for v in kw_index.idf.values()):
+                    kw_index = _BM25(tokenized)
+                self._kw_index = kw_index
+            else:
+                self._kw_index = _BM25(tokenized)
         else:
             self._kw_index = None
         self._kw_ids = ids

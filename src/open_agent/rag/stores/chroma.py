@@ -14,7 +14,7 @@ import asyncio
 from typing import Any
 
 try:
-    import chromadb  # type: ignore[import-not-found]
+    import chromadb
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
         "ChromaDB is required for ChromaStore. Install it with: "
@@ -56,7 +56,7 @@ class ChromaStore:
             self._collection.add,
             ids=ids,
             documents=documents,
-            metadatas=metadatas,
+            metadatas=metadatas,  # type: ignore[arg-type]
         )
 
     async def query(self, query_text: str, n_results: int = 5) -> list[dict[str, Any]]:
@@ -74,10 +74,14 @@ class ChromaStore:
             query_texts=[query_text],
             n_results=n_results,
         )
-        ids_batch = raw.get("ids", [[]])[0]
-        docs_batch = raw.get("documents", [[]])[0]
-        dists_batch = raw.get("distances", [[]])[0]
-        meta_batch = raw.get("metadatas", [[]])[0]
+        ids_raw = raw.get("ids") or [[]]
+        docs_raw = raw.get("documents") or [[]]
+        dists_raw = raw.get("distances") or [[]]
+        meta_raw = raw.get("metadatas") or [[]]
+        ids_batch = ids_raw[0] if ids_raw else []
+        docs_batch = docs_raw[0] if docs_raw else []
+        dists_batch = dists_raw[0] if dists_raw else []
+        meta_batch = meta_raw[0] if meta_raw else []
         results: list[dict[str, Any]] = []
         for i, doc_id in enumerate(ids_batch):
             results.append(
