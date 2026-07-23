@@ -16,7 +16,7 @@ from collections import Counter
 from typing import Any
 
 try:
-    from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]
+    from rank_bm25 import BM25Okapi
 
     _HAS_RANK_BM25 = True
 except ImportError:

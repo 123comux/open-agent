@@ -1,11 +1,5 @@
 import * as vscode from 'vscode';
 
-import {
-  chatWithBackend,
-  getToolsFromBackend,
-  healthCheckBackend,
-  streamChatFromBackend,
-} from './apiClient';
 import { BackendManager } from './backendManager';
 import { ChatPanelProvider } from './chatPanel';
 

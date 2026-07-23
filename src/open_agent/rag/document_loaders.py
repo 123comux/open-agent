@@ -87,7 +87,7 @@ def load_pdf(file_path: str) -> LoadedDocument:
     Falls back to PyPDF2 if PyMuPDF is not installed.
     """
     try:
-        import fitz  # type: ignore[import-untyped]  # PyMuPDF
+        import fitz  # PyMuPDF
     except ImportError:
         return _load_pdf_with_pypdf2(file_path)
 

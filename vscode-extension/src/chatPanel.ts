@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatResponse, Tool, ToolCallInfo } from '../../shared/types';
+import type { Tool } from '../../shared/types';
 import {
   chatWithBackend,
   getToolsFromBackend,
@@ -124,9 +124,9 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           fallback = false;
           this.post({ type: 'thought', content, step });
         },
-        onToolStart: (name, arguments: Record<string, unknown>) => {
+        onToolStart: (name, args: Record<string, unknown>) => {
           fallback = false;
-          this.post({ type: 'toolStart', name, arguments });
+          this.post({ type: 'toolStart', name, arguments: args });
         },
         onToolEnd: (name, observation, is_error) => {
           fallback = false;
