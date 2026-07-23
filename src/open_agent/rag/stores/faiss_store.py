@@ -76,7 +76,7 @@ class FAISSStore:
         if copy.ndim == 1:
             copy = copy.reshape(1, -1)
         faiss.normalize_L2(copy)
-        return copy  # type: ignore[no-any-return]
+        return copy
 
     def _embed_sync(
         self, texts: list[str]
